@@ -1,0 +1,18 @@
+;Exempel: bricka, diameter 40 mm, hal 20 mm, ytterkontur med R-bagar
+G21
+G40 G49 G80 G90 G92.1 G94 G97
+M190 P2
+M66 P3 L3 Q1
+F#<_hal[plasmac.cut-feed-rate]>
+G0 X20 Y20
+M3 $0 S1
+G1 X30 Y20
+G3 X30 Y20 I-10 J0
+M5 $0
+G0 X45 Y20
+M3 $0 S1
+G1 X40 Y20
+G3 X0 Y20 R20
+G3 X40 Y20 R20
+M5 $0
+M2

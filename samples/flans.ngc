@@ -1,0 +1,32 @@
+;Exempel: flans 100x60 mm med hal, QtPlasmaC-format
+G21
+G40 G49 G80 G90 G92.1 G94 G97
+G64 P0.1
+M52 P1
+M190 P1
+M66 P3 L3 Q1
+F#<_hal[plasmac.cut-feed-rate]>
+#<holes> = 2
+;hal 1
+G0 X25 Y30
+M3 $0 S1
+G1 X31 Y30
+G3 X31 Y30 I-6 J0
+M5 $0
+;hal 2
+G0 X75 Y30
+M3 $0 S1
+G1 X81 Y30
+G3 X81 Y30 I-6 J0
+M5 $0
+;ytterkontur
+G0 X-5 Y-5
+M3 $0 S1
+G1 X0 Y0
+G1 X100 Y0
+G1 X100 Y60
+G1 X0 Y60
+G1 X0 Y0
+M5 $-1
+G0 X0 Y0
+M2
