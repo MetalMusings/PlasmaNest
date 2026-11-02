@@ -10,10 +10,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt
 from PyQt5.QtGui import QMouseEvent
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QDialog
 
 from plasmanest.gcode import Program, load_program
-from plasmanest.gui import ROTATE_MIN_RADIUS, MainWindow
+from plasmanest.gui import ROTATE_MIN_RADIUS, CornerDialog, MainWindow
+from plasmanest.nest import Sheet
 
 SAMPLES = os.path.join(os.path.dirname(__file__), "..", "samples")
 FLANS = os.path.join(SAMPLES, "flans.ngc")
@@ -342,3 +343,282 @@ def test_rotation_by_mouse_is_one_undo_step_and_reaches_the_export(small_sheet, 
     assert f"a={part.placement.angle:.6f}".rstrip("0") in ngc.read_text()
     small_sheet.undo()
     assert small_sheet.parts[0].placement.angle == 0
+
+
+OFFCUT = [(0, 0), (800, 0), (800, 250), (520, 500), (300, 500), (300, 300), (150, 300), (150, 500), (0, 500)]
+
+
+def click(win, x, y, modifiers=Qt.NoModifier):
+    QTest.mouseClick(win.view.viewport(), Qt.LeftButton, modifiers, to_view(win, x, y))
+
+
+def press_key(win, key):
+    QTest.keyClick(win.view, key)
+
+
+def draw(win, corners):
+    win.toggle_drawing()
+    for x, y in corners:
+        click(win, x, y)
+
+
+@pytest.fixture
+def coarse(window):
+    """A view where one pixel is a known, small part of a large sheet, for exact whole-mm clicks."""
+    window.set_sheet(Sheet.rectangle(800, 500))
+    window.commit()
+    return window
+
+
+def assert_corners_close(sheet, corners, tolerance=2.0):
+    assert len(sheet.corners) == len(corners)
+    for got, wanted in zip(sheet.corners, corners):
+        assert math.hypot(got[0] - wanted[0], got[1] - wanted[1]) <= tolerance, (got, wanted)
+
+
+def test_draw_polygon_and_finish_with_enter(coarse):
+    corners = [(100, 100), (700, 100), (700, 400), (300, 450)]
+    draw(coarse, corners)
+    assert coarse.view.drawing is not None and coarse.draw_button.text() == "Avbryt"
+    press_key(coarse, Qt.Key_Return)
+    assert coarse.view.drawing is None and coarse.draw_button.text() == "Rita"
+    assert_corners_close(coarse.sheet, corners)
+    assert all(float(c).is_integer() for corner in coarse.sheet.corners for c in corner)
+    assert not coarse.sheet.is_rectangle
+    assert "4 hörn" in coarse.sheet_info.text()
+
+
+def test_click_on_first_corner_closes_the_polygon(coarse):
+    corners = [(100, 100), (700, 100), (400, 400)]
+    draw(coarse, corners)
+    click(coarse, 100, 100)
+    assert coarse.view.drawing is None
+    assert_corners_close(coarse.sheet, corners)
+
+
+def test_double_click_places_the_last_corner_and_finishes(coarse):
+    draw(coarse, [(100, 100), (700, 100)])
+    viewport = coarse.view.viewport()
+    pos = to_view(coarse, 400, 400)
+    QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, pos)
+    QTest.mouseDClick(viewport, Qt.LeftButton, Qt.NoModifier, pos)
+    assert coarse.view.drawing is None
+    assert_corners_close(coarse.sheet, [(100, 100), (700, 100), (400, 400)])
+
+
+def test_escape_cancels_and_backspace_takes_back(coarse):
+    before = coarse.sheet
+    draw(coarse, [(100, 100), (700, 100), (700, 400)])
+    press_key(coarse, Qt.Key_Backspace)
+    assert len(coarse.view.drawing) == 2
+    press_key(coarse, Qt.Key_Escape)
+    assert coarse.view.drawing is None and coarse.sheet is before
+    assert coarse.view.draft.path().isEmpty()
+    assert coarse.draw_button.text() == "Rita"
+
+
+def test_crossing_polygon_is_refused_and_can_be_corrected(coarse):
+    before = coarse.sheet
+    draw(coarse, [(100, 100), (700, 400), (700, 100), (100, 400)])
+    press_key(coarse, Qt.Key_Return)
+    assert coarse.view.drawing is not None and coarse.sheet is before
+    assert "korsar" in coarse.sheet_info.text()
+    press_key(coarse, Qt.Key_Backspace)
+    press_key(coarse, Qt.Key_Return)
+    assert coarse.view.drawing is None
+    assert len(coarse.sheet.corners) == 3
+
+
+def test_too_few_corners_stay_in_drawing(coarse):
+    draw(coarse, [(100, 100), (700, 100)])
+    press_key(coarse, Qt.Key_Return)
+    assert coarse.view.drawing is not None and "tre" in coarse.sheet_info.text()
+    press_key(coarse, Qt.Key_Escape)
+
+
+def test_shift_gives_straight_edges(coarse):
+    coarse.toggle_drawing()
+    click(coarse, 100, 100)
+    click(coarse, 600, 130, Qt.ShiftModifier)
+    click(coarse, 630, 400, Qt.ShiftModifier)
+    first, second, third = coarse.view.drawing
+    assert second[1] == first[1]
+    assert third[0] == second[0]
+    press_key(coarse, Qt.Key_Escape)
+
+
+def test_drawing_does_not_move_or_select_figures(coarse):
+    coarse.load_paths([FLANS])
+    part = coarse.parts[0]
+    coarse.scene_.clearSelection()
+    pose = (part.placement.x, part.placement.y)
+    coarse.toggle_drawing()
+    click(coarse, *edge_point(part))
+    assert len(coarse.view.drawing) == 1
+    assert not part.isSelected() and (part.placement.x, part.placement.y) == pose
+    press_key(coarse, Qt.Key_Escape)
+    # Back to normal: the same click now selects.
+    click(coarse, *edge_point(part))
+    assert part.isSelected()
+
+
+def test_right_drag_on_a_figure_while_drawing_does_not_rotate_it(coarse):
+    coarse.load_paths([FLANS])
+    part = coarse.parts[0]
+    coarse.scene_.clearSelection()
+    coarse.toggle_drawing()
+    x, y = part.placement.x, part.placement.y
+    right_drag(coarse, arc((x, y), 40, 0, 90))
+    assert part.placement.angle == 0 and coarse.view.rotation_drag is None
+    press_key(coarse, Qt.Key_Escape)
+
+
+def test_polygon_decides_what_is_outside(window):
+    window.set_sheet(Sheet(OFFCUT))
+    window.load_paths([FLANS])
+    part = window.parts[0]
+    part.set_center(300, 150)
+    window.refresh()
+    assert window.outside_count == 0 and part.state == "ok"
+    part.set_center(225, 400)
+    window.refresh()
+    assert window.outside_count == 1 and part.state == "outside"
+    assert "utanför" in window.status_label.text()
+    part.set_center(300, 150)
+    window.set_sheet(Sheet([(0, 0), (100, 0), (0, 100)]))
+    assert part.state == "outside"
+
+
+def test_new_figures_are_placed_on_the_polygon(window):
+    window.set_sheet(Sheet(OFFCUT))
+    window.load_paths([FLANS])
+    window.copy_parts(window.parts, 11)
+    assert len(window.parts) == 12
+    assert window.outside_count == 0 and window.overlap_count == 0
+
+
+def test_placement_finds_the_arm_beside_a_notch(window):
+    # 105 mm wide figure on a 120 mm sheet: fits only without the usual gap to the edge.
+    window.set_sheet(Sheet([(0, 0), (120, 0), (120, 400), (0, 400)]))
+    window.load_paths([FLANS])
+    assert window.outside_count == 0
+    # An L-shaped sheet: copies fill the low strip and then go up the arm.
+    arm = Sheet([(0, 0), (500, 0), (500, 90), (130, 90), (130, 500), (0, 500)])
+    window.set_sheet(arm)
+    window.copy_parts(window.parts, 4)
+    assert window.outside_count == 0 and window.overlap_count == 0
+
+
+def test_figure_goes_beside_a_too_small_polygon_and_is_flagged(window):
+    window.set_sheet(Sheet([(0, 0), (30, 0), (0, 30)]))
+    window.load_paths([FLANS])
+    assert window.outside_count == 1
+    assert window.parts[0].placement.bounds()[0] > 30
+
+
+def test_size_fields_follow_the_shape(window):
+    window.set_sheet(Sheet(OFFCUT))
+    assert window.sheet_width.value() == 800 and window.sheet_height.value() == 500
+    assert not window.sheet_width.isEnabled() and window.rectangle_button.isEnabled()
+    window.sheet_changed()  # must not turn the polygon back into a rectangle
+    assert len(window.sheet.corners) == len(OFFCUT)
+    window.make_rectangle()
+    assert window.sheet.is_rectangle and window.sheet.bounds == (0, 0, 800, 500)
+    assert window.sheet_width.isEnabled() and not window.rectangle_button.isEnabled()
+    window.sheet_width.setValue(900)
+    window.sheet_changed()
+    assert window.sheet.bounds == (0, 0, 900, 500)
+
+
+def test_undo_covers_the_sheet_shape(window):
+    original = window.sheet
+    window.set_sheet(Sheet(OFFCUT))
+    assert window.is_dirty()
+    window.undo()
+    assert window.sheet is original and window.sheet_width.isEnabled()
+    window.redo()
+    assert len(window.sheet.corners) == len(OFFCUT)
+
+
+def test_undo_during_drawing_ends_the_drawing(coarse):
+    coarse.set_sheet(Sheet(OFFCUT))
+    draw(coarse, [(100, 100)])
+    coarse.undo()
+    assert coarse.view.drawing is None and coarse.draw_button.text() == "Rita"
+    assert coarse.view.draft.path().isEmpty()
+
+
+def test_polygon_survives_project_round_trip(window, tmp_path):
+    window.set_sheet(Sheet(OFFCUT))
+    window.load_paths([FLANS])
+    project = tmp_path / "p.pnest"
+    assert window.write_project(str(project))
+    assert not window.is_dirty()
+    window.new_project()
+    window.make_rectangle()
+    window.saved_state = window.undo_stack[window.undo_index]
+    window.open_project_path(str(project))
+    assert window.sheet.corners == tuple((float(x), float(y)) for x, y in OFFCUT)
+    assert len(window.parts) == 1 and not window.is_dirty()
+    assert not window.sheet_width.isEnabled()
+
+
+def test_window_fits_a_small_machine_screen(window):
+    window.set_sheet(Sheet(OFFCUT))
+    assert window.minimumSizeHint().height() < 700
+    assert window.minimumSizeHint().width() < 1000
+    # On a full HD screen everything fits, so there is nothing to scroll.
+    window.resize(1280, 1000)
+    QTest.qWait(50)
+    if os.environ["QT_QPA_PLATFORM"] != "offscreen":  # the offscreen plugin has other font metrics
+        assert not window.panel_scroll.verticalScrollBar().isVisible()
+    assert window.panel_scroll.width() < 380
+    # On a small screen the panel scrolls instead of growing the window.
+    window.resize(1024, 600)
+    QTest.qWait(50)
+    assert window.height() <= 600
+    assert window.panel_scroll.verticalScrollBar().maximum() > 0
+
+
+def test_view_fits_a_polygon_away_from_the_origin(window):
+    window.set_sheet(Sheet([(-1000, -800), (-200, -800), (-600, -100)]))
+    for corner in window.sheet.corners:
+        assert window.view.viewport().rect().contains(to_view(window, *corner))
+
+
+# ---------------------------------------------------------------- corner dialog
+
+def test_corner_dialog_reads_comma_and_point(window):
+    dialog = CornerDialog(window, OFFCUT[:3])
+    dialog.table.item(0, 0).setText("1,5")
+    dialog.table.item(0, 1).setText(" 2.5 ")
+    dialog.accept()
+    assert dialog.result() == QDialog.Accepted
+    assert dialog.sheet.corners[0] == (1.5, 2.5)
+
+
+def test_corner_dialog_add_and_remove_rows(window):
+    dialog = CornerDialog(window, [(0, 0), (100, 0), (100, 100)])
+    dialog.table.setCurrentCell(1, 0)
+    dialog.add_after_selected()
+    assert dialog.table.rowCount() == 4 and dialog.table.currentRow() == 2
+    dialog.table.item(2, 0).setText("150")
+    dialog.table.item(2, 1).setText("50")
+    assert dialog.corners()[2] == (150, 50)
+    dialog.remove_selected()
+    assert dialog.table.rowCount() == 3
+
+
+@pytest.mark.parametrize("edit, message", [
+    (lambda d: d.table.item(0, 0).setText("abc"), "Rad 1"),
+    (lambda d: d.table.item(1, 1).setText(""), "Rad 2"),
+    (lambda d: d.table.item(2, 0).setText("nan"), "Rad 3"),
+    (lambda d: (d.table.removeRow(0), d.table.removeRow(0)), "tre"),
+    (lambda d: d.table.item(0, 0).setText("1000"), "korsar"),
+])
+def test_corner_dialog_refuses_bad_input_and_stays_open(window, edit, message):
+    dialog = CornerDialog(window, [(0, 0), (100, 0), (100, 100), (0, 100)])
+    edit(dialog)
+    dialog.accept()
+    assert dialog.sheet is None and dialog.result() != QDialog.Accepted
+    assert message in dialog.error.text()

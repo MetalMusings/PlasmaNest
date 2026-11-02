@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 from .gcode import Program, format_number
 
-PROJECT_VERSION = 1
+PROJECT_VERSION = 2
+GEOMETRY_TOLERANCE = 1e-6  # mm
 
 
 def rotation(angle):
@@ -42,9 +43,134 @@ class Placement:
         xs, ys = [p[0] for p in points], [p[1] for p in points]
         return min(xs), min(ys), max(xs), max(ys)
 
-    def inside(self, width, height, tolerance=1e-6):
-        x0, y0, x1, y1 = self.bounds()
-        return x0 >= -tolerance and y0 >= -tolerance and x1 <= width + tolerance and y1 <= height + tolerance
+
+def _orientation(a, b, c):
+    value = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    return 0 if abs(value) < 1e-9 else (1 if value > 0 else -1)
+
+
+def _on_segment(a, b, p):
+    """p is known to be on the line through a and b."""
+    return (min(a[0], b[0]) - GEOMETRY_TOLERANCE <= p[0] <= max(a[0], b[0]) + GEOMETRY_TOLERANCE
+            and min(a[1], b[1]) - GEOMETRY_TOLERANCE <= p[1] <= max(a[1], b[1]) + GEOMETRY_TOLERANCE)
+
+
+def _segments_touch(a, b, c, d):
+    o1, o2, o3, o4 = _orientation(a, b, c), _orientation(a, b, d), _orientation(c, d, a), _orientation(c, d, b)
+    if o1 != o2 and o3 != o4:
+        return True
+    return ((o1 == 0 and _on_segment(a, b, c)) or (o2 == 0 and _on_segment(a, b, d))
+            or (o3 == 0 and _on_segment(c, d, a)) or (o4 == 0 and _on_segment(c, d, b)))
+
+
+def _distance_to_segment(p, a, b):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length2 = dx * dx + dy * dy
+    t = 0.0 if length2 == 0 else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length2))
+    return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
+
+
+class Sheet:
+    """The steel sheet: a simple polygon in G-code coordinates (mm)."""
+
+    def __init__(self, corners):
+        cleaned = []
+        for x, y in corners:
+            point = (float(x), float(y))
+            if not cleaned or math.hypot(point[0] - cleaned[-1][0], point[1] - cleaned[-1][1]) > GEOMETRY_TOLERANCE:
+                cleaned.append(point)
+        if len(cleaned) > 1 and math.hypot(cleaned[0][0] - cleaned[-1][0],
+                                           cleaned[0][1] - cleaned[-1][1]) <= GEOMETRY_TOLERANCE:
+            cleaned.pop()
+        if len(cleaned) < 3:
+            raise ValueError("Plåten behöver minst tre olika hörn.")
+        self.corners = tuple(cleaned)
+        self.edges = tuple(zip(self.corners, self.corners[1:] + self.corners[:1]))
+        if all(_orientation(cleaned[0], cleaned[1], corner) == 0 for corner in cleaned):
+            raise ValueError("Plåtens hörn ligger på en rak linje.")
+        self._check_simple()
+        self.area = abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in self.edges)) / 2
+        xs, ys = [c[0] for c in self.corners], [c[1] for c in self.corners]
+        self.bounds = (min(xs), min(ys), max(xs), max(ys))
+        self.width = self.bounds[2] - self.bounds[0]
+        self.height = self.bounds[3] - self.bounds[1]
+        self.is_rectangle = len(self.corners) == 4 and all(
+            abs(a[0] - b[0]) < GEOMETRY_TOLERANCE or abs(a[1] - b[1]) < GEOMETRY_TOLERANCE for a, b in self.edges)
+
+    @classmethod
+    def rectangle(cls, width, height, x0=0.0, y0=0.0):
+        return cls([(x0, y0), (x0 + width, y0), (x0 + width, y0 + height), (x0, y0 + height)])
+
+    def _check_simple(self):
+        count = len(self.edges)
+        for i in range(count):
+            a, b = self.edges[i]
+            for j in range(i + 1, count):
+                c, d = self.edges[j]
+                if j == i + 1 or (i == 0 and j == count - 1):
+                    # Neighbours share a corner, which is only wrong if one folds back over the other.
+                    shared, p, q = (b, a, d) if j == i + 1 else (a, b, c)
+                    folded = (_orientation(p, shared, q) == 0
+                              and (p[0] - shared[0]) * (q[0] - shared[0]) + (p[1] - shared[1]) * (q[1] - shared[1]) > 0)
+                    if folded:
+                        raise ValueError("Plåtens kanter viker sig tillbaka över varandra.")
+                elif _segments_touch(a, b, c, d):
+                    raise ValueError("Plåtens kanter korsar varandra.")
+
+    def contains_point(self, point):
+        """True if the point is on the sheet, its edge included."""
+        x, y = point
+        inside = False
+        for a, b in self.edges:
+            if _distance_to_segment(point, a, b) <= GEOMETRY_TOLERANCE:
+                return True
+            if (a[1] > y) != (b[1] > y) and x < a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]):
+                inside = not inside
+        return inside
+
+    def contains_segment(self, a, b):
+        """True if the whole straight line a-b is on the sheet, also over notches."""
+        if not self.contains_point(a) or not self.contains_point(b):
+            return False
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length2 = dx * dx + dy * dy
+        if length2 == 0:
+            return True
+        low_x, high_x = min(a[0], b[0]), max(a[0], b[0])
+        low_y, high_y = min(a[1], b[1]), max(a[1], b[1])
+        cuts = [0.0, 1.0]
+        for c, d in self.edges:
+            if (max(c[0], d[0]) < low_x or min(c[0], d[0]) > high_x
+                    or max(c[1], d[1]) < low_y or min(c[1], d[1]) > high_y):
+                continue
+            ex, ey = d[0] - c[0], d[1] - c[1]
+            denominator = dx * ey - dy * ex
+            if abs(denominator) > 1e-12:
+                cuts.append(((c[0] - a[0]) * ey - (c[1] - a[1]) * ex) / denominator)
+            else:
+                cuts += [((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / length2 for q in (c, d)]
+        cuts = sorted(t for t in cuts if 0.0 <= t <= 1.0)
+        # Between two neighbouring crossings the line is wholly on or wholly off the sheet.
+        return all(self.contains_point((a[0] + (t0 + t1) / 2 * dx, a[1] + (t0 + t1) / 2 * dy))
+                   for t0, t1 in zip(cuts, cuts[1:]) if t1 - t0 > 1e-12)
+
+    def contains_box(self, x0, y0, x1, y1):
+        corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        return all(self.contains_segment(a, b) for a, b in zip(corners, corners[1:] + corners[:1]))
+
+    def contains_placement(self, placement):
+        """True if all cutting of the figure stays on the sheet."""
+        if self.is_rectangle:
+            x0, y0, x1, y1 = placement.bounds()
+            return (x0 >= self.bounds[0] - GEOMETRY_TOLERANCE and y0 >= self.bounds[1] - GEOMETRY_TOLERANCE
+                    and x1 <= self.bounds[2] + GEOMETRY_TOLERANCE and y1 <= self.bounds[3] + GEOMETRY_TOLERANCE)
+        for path in placement.program.paths:
+            if path.kind != "cut":
+                continue
+            points = [placement.map_point(p) for p in path.points]
+            if not all(self.contains_segment(a, b) for a, b in zip(points, points[1:])):
+                return False
+        return True
 
 
 def _move_text(placement, move):
@@ -127,7 +253,7 @@ def material_warning(placements):
     return None
 
 
-def save_project(path, width, height, placements):
+def save_project(path, sheet, placements):
     """Save the sheet, the placements and the G-code itself, so the file stands alone."""
     programs = []
     for placement in placements:
@@ -135,7 +261,7 @@ def save_project(path, width, height, placements):
             programs.append(placement.program)
     data = {
         "version": PROJECT_VERSION,
-        "sheet": {"width": width, "height": height},
+        "sheet": {"corners": [list(corner) for corner in sheet.corners]},
         "programs": [{"name": p.name, "text": p.text} for p in programs],
         "figures": [{"program": programs.index(p.program), "x": p.x, "y": p.y, "angle": p.angle}
                     for p in placements],
@@ -145,11 +271,16 @@ def save_project(path, width, height, placements):
 
 
 def load_project(path):
-    """Return (width, height, placements)."""
+    """Return (sheet, placements). Version 1 files hold a width and height instead of corners."""
     with open(path, encoding="utf-8") as handle:
         data = json.load(handle)
-    if data.get("version") != PROJECT_VERSION:
+    version = data.get("version")
+    if version == 1:
+        sheet = Sheet.rectangle(data["sheet"]["width"], data["sheet"]["height"])
+    elif version == PROJECT_VERSION:
+        sheet = Sheet(data["sheet"]["corners"])
+    else:
         raise ValueError("Okänd version av projektfilen.")
     programs = [Program(p["name"], p["text"]) for p in data["programs"]]
     placements = [Placement(programs[f["program"]], f["x"], f["y"], f["angle"]) for f in data["figures"]]
-    return data["sheet"]["width"], data["sheet"]["height"], placements
+    return sheet, placements

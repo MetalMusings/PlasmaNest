@@ -32,7 +32,10 @@ Testa gärna med filerna i `samples/`.
 | Vad | Hur |
 |---|---|
 | Läsa in G-kod | **Läs in…** eller Ctrl+L. Figuren läggs på en ledig plats på plåten. |
-| Plåtens storlek | Bredd och höjd i panelen. Plåtens nedre vänstra hörn är G-kodens X0 Y0. |
+| Rektangulär plåt | Bredd och höjd i panelen. Plåtens nedre vänstra hörn är G-kodens X0 Y0. |
+| Rita plåten | **Rita**, och klicka ut hörnen med musen. Avsluta med dubbelklick, Enter eller klick på första hörnet. Backsteg tar bort senaste hörnet, Esc avbryter och Shift ger raka kanter. Hörnen hamnar på hela millimeter. |
+| Skriva plåtens hörn | **Hörn…** visar hörnen i en tabell, där du kan ändra, lägga till och ta bort dem. Använd den för exakta mått. |
+| Tillbaka till rektangel | **Rektangel** ger en rektangel med polygonens yttermått, med hörnet i X0 Y0. |
 | Flytta | Dra med vänster musknapp, skriv X/Y i panelen, eller använd piltangenterna (1 mm, med Shift 10 mm). |
 | Rotera | Håll höger musknapp på figuren och dra runt den, så följer figuren muspekaren (Ctrl ger steg om 15°). Det går också med den gröna ringen, Shift+mushjul, tangenten R, knapparna i panelen, eller genom att skriva vinkeln. |
 | Markera flera | Dra en ruta på tom yta, eller Ctrl-klicka. Flera figurer roterar som en grupp. |
@@ -45,6 +48,11 @@ Testa gärna med filerna i `samples/`.
 Figurer som ligger utanför plåten blir **röda** och figurer som överlappar blir **orange**. Att
 lägga en figur inuti ett hål i en annan räknas inte som överlapp. Kontrollen gäller den
 programmerade banan, så skärspalten (kerf) räknas inte med: lämna själv tillräckligt avstånd.
+
+Plåten kan ha vilken form som helst så länge kanterna inte korsar varandra, till exempel en
+restbit med urtag. Den behöver inte ligga vid G-kodens X0 Y0, som visas med ett lila kors, men
+hörnens koordinater måste stämma med hur plåten ligger i maskinen. Plåtens form är bara en
+kontroll: den påverkar inte G-koden, och QtPlasmaC känner inte till den.
 
 ## Två sorters filer
 

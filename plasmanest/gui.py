@@ -4,20 +4,23 @@ import math
 import os
 import sys
 
-from PyQt5.QtCore import QPointF, QRectF, Qt, QTimer
+from PyQt5.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PyQt5.QtGui import (QBrush, QColor, QKeySequence, QPainter, QPainterPath, QPainterPathStroker,
                          QPen, QPolygonF)
 from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox, QDialog,
-                             QDialogButtonBox, QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout,
+                             QDialogButtonBox, QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
                              QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsSimpleTextItem,
                              QGraphicsView, QGroupBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-                             QMainWindow, QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget)
+                             QMainWindow, QMessageBox, QPushButton, QScrollArea, QSpinBox, QTableWidget,
+                             QTableWidgetItem, QVBoxLayout, QWidget)
 
 from .gcode import GCodeError, load_program
-from .nest import Placement, export_gcode, load_project, material_warning, save_project
+from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
 
 APP_NAME = "PlasmaNest"
 PART_GAP = 10.0        # mm between figures placed automatically
+FREE_SPOT_GRID = 24    # extra positions per axis tried on a polygon sheet
+CLOSE_POLYGON_RADIUS = 10  # pixels from the first corner that closes a drawn polygon
 NUDGE_STEP = 1.0       # mm per arrow key press
 NUDGE_STEP_LARGE = 10.0
 HANDLE_DISTANCE = 42   # pixels from the figure to the rotation handle
@@ -33,6 +36,8 @@ COLOR_SHEET = QColor("#e4e7ea")
 COLOR_SHEET_EDGE = QColor("#37474f")
 COLOR_GRID = QColor("#ccd2d7")
 COLOR_VIEW = QColor("#90a4ae")
+COLOR_ORIGIN = QColor("#6a1b9a")
+COLOR_DRAFT = QColor("#c2185b")
 
 
 def cosmetic_pen(color, width=1.0, style=Qt.SolidLine):
@@ -47,37 +52,66 @@ def normalize_angle(angle):
 
 
 class SheetItem(QGraphicsItem):
-    """The steel sheet, with its lower left corner at the G-code origin."""
+    """The steel sheet in G-code coordinates, with a grid aligned to the origin."""
 
     GRID = 100.0
 
-    def __init__(self, width, height):
+    def __init__(self, sheet):
         super().__init__()
-        self.width, self.height = width, height
         self.setZValue(-10)
         self.setAcceptedMouseButtons(Qt.NoButton)
+        self.set_sheet(sheet)
 
-    def set_size(self, width, height):
+    def set_sheet(self, sheet):
         self.prepareGeometryChange()
-        self.width, self.height = width, height
+        self.sheet = sheet
+        self.outline = QPainterPath()
+        self.outline.addPolygon(QPolygonF([QPointF(x, y) for x, y in sheet.corners]))
+        self.outline.closeSubpath()
+        self.update()
 
     def boundingRect(self):
-        return QRectF(-2, -2, self.width + 4, self.height + 4)
+        return self.outline.boundingRect().adjusted(-2, -2, 2, 2)
 
     def paint(self, painter, option, widget=None):
-        rect = QRectF(0, 0, self.width, self.height)
-        painter.fillRect(rect, COLOR_SHEET)
+        x0, y0, x1, y1 = self.sheet.bounds
+        painter.fillPath(self.outline, COLOR_SHEET)
+        painter.save()
+        painter.setClipPath(self.outline)
         painter.setPen(cosmetic_pen(COLOR_GRID))
-        x = self.GRID
-        while x < self.width:
-            painter.drawLine(QPointF(x, 0), QPointF(x, self.height))
+        x = math.ceil(x0 / self.GRID) * self.GRID
+        while x < x1:
+            painter.drawLine(QPointF(x, y0), QPointF(x, y1))
             x += self.GRID
-        y = self.GRID
-        while y < self.height:
-            painter.drawLine(QPointF(0, y), QPointF(self.width, y))
+        y = math.ceil(y0 / self.GRID) * self.GRID
+        while y < y1:
+            painter.drawLine(QPointF(x0, y), QPointF(x1, y))
             y += self.GRID
+        painter.restore()
+        painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(cosmetic_pen(COLOR_SHEET_EDGE, 2.0))
-        painter.drawRect(rect)
+        painter.drawPath(self.outline)
+
+
+class OriginItem(QGraphicsItem):
+    """Cross at G-code X0 Y0, since a polygon sheet need not start there."""
+
+    SIZE = 12.0
+
+    def __init__(self):
+        super().__init__()
+        self.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+        self.setAcceptedMouseButtons(Qt.NoButton)
+        self.setToolTip("G-kodens X0 Y0")
+        self.setZValue(-5)
+
+    def boundingRect(self):
+        return QRectF(-self.SIZE - 1, -self.SIZE - 1, 2 * self.SIZE + 2, 2 * self.SIZE + 2)
+
+    def paint(self, painter, option, widget=None):
+        painter.setPen(cosmetic_pen(COLOR_ORIGIN, 2.0))
+        painter.drawLine(QPointF(-self.SIZE, 0), QPointF(self.SIZE, 0))
+        painter.drawLine(QPointF(0, -self.SIZE), QPointF(0, self.SIZE))
 
 
 class RotateHandle(QGraphicsItem):
@@ -134,6 +168,7 @@ class PartItem(QGraphicsItem):
         self.window = window
         self.state = "ok"
         self.show_rapids = True
+        self.on_sheet_cache = (None, True)
         program = placement.program
         cx, cy = program.center
         self.cut_path = QPainterPath()
@@ -190,6 +225,13 @@ class PartItem(QGraphicsItem):
     def scene_region(self):
         return self.sceneTransform().map(self.cut_path)
 
+    def on_sheet(self, sheet):
+        # A polygon check walks every cut segment, and refresh runs for every figure while dragging.
+        key = (self.placement.x, self.placement.y, self.placement.angle, sheet)
+        if self.on_sheet_cache[0] != key:
+            self.on_sheet_cache = (key, sheet.contains_placement(self.placement))
+        return self.on_sheet_cache[1]
+
     def boundingRect(self):
         rect = self.cut_path.boundingRect().united(self.rapid_path.boundingRect())
         return rect.adjusted(-2, -2, 2, 2)
@@ -243,6 +285,79 @@ class NestView(QGraphicsView):
         self.scale(1, -1)
         self.pan_from = None
         self.rotation_drag = None
+        self.drawing = None
+        self.draft = QGraphicsPathItem()
+        self.draft.setPen(cosmetic_pen(COLOR_DRAFT, 2.0))
+        self.draft.setAcceptedMouseButtons(Qt.NoButton)
+        self.draft.setZValue(10)
+        scene.addItem(self.draft)
+
+    # ------------------------------------------------------------ polygon drawing
+
+    def start_drawing(self):
+        self.scene().clearSelection()
+        self.drawing = []
+        self.setCursor(Qt.CrossCursor)
+        self.setFocus()
+        self.update_draft(None)
+
+    def stop_drawing(self):
+        self.drawing = None
+        self.unsetCursor()
+        self.draft.setPath(QPainterPath())
+
+    def draft_point(self, pos, modifiers):
+        """Scene position of a corner: whole mm, with Shift straight from the previous corner."""
+        scene_pos = self.mapToScene(pos)
+        x, y = round(scene_pos.x()), round(scene_pos.y())
+        if modifiers & Qt.ShiftModifier and self.drawing:
+            last = self.drawing[-1]
+            if abs(x - last[0]) >= abs(y - last[1]):
+                y = last[1]
+            else:
+                x = last[0]
+        return float(x), float(y)
+
+    def update_draft(self, cursor):
+        path = QPainterPath()
+        points = list(self.drawing)
+        if cursor is not None:
+            points.append(cursor)
+        if points:
+            path.addPolygon(QPolygonF([QPointF(x, y) for x, y in points]))
+        self.draft.setPath(path)
+
+    def near_first_corner(self, pos):
+        if len(self.drawing) < 3:
+            return False
+        first = self.mapFromScene(QPointF(*self.drawing[0]))
+        return math.hypot(pos.x() - first.x(), pos.y() - first.y()) <= CLOSE_POLYGON_RADIUS
+
+    def finish_drawing(self):
+        try:
+            sheet = Sheet(self.drawing)
+        except ValueError as error:
+            # Keep the corners: the last ones can be taken back with Backspace.
+            self.window_.sheet_info.setText(f"<b style='color:{COLOR_OUTSIDE.name()}'>{error}</b>")
+            return
+        self.stop_drawing()
+        self.window_.set_sheet(sheet)
+
+    def drawing_key(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.finish_drawing()
+        elif event.key() == Qt.Key_Escape:
+            self.stop_drawing()
+            self.window_.update_sheet_panel()
+        elif event.key() == Qt.Key_Backspace:
+            if self.drawing:
+                self.drawing.pop()
+            self.update_draft(None)
+        else:
+            return False
+        return True
+
+    # ------------------------------------------------------------------- rotation
 
     def part_at(self, pos):
         for item in self.items(pos):
@@ -295,8 +410,7 @@ class NestView(QGraphicsView):
         self.window_.statusBar().showMessage(text)
 
     def fit(self):
-        sheet = self.window_.sheet
-        rect = QRectF(0, 0, sheet.width, sheet.height)
+        rect = self.window_.sheet_item.boundingRect()
         for part in self.window_.parts:
             rect = rect.united(part.sceneBoundingRect())
         margin = max(rect.width(), rect.height()) * 0.04
@@ -316,7 +430,17 @@ class NestView(QGraphicsView):
             self.window_.update_handles()
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.RightButton:
+        if self.drawing is not None and event.button() == Qt.LeftButton:
+            if self.near_first_corner(event.pos()):
+                self.finish_drawing()
+            else:
+                point = self.draft_point(event.pos(), event.modifiers())
+                if not self.drawing or point != self.drawing[-1]:
+                    self.drawing.append(point)
+                self.update_draft(None)
+            event.accept()
+            return
+        if event.button() == Qt.RightButton and self.drawing is None:
             part = self.part_at(event.pos())
             if part is not None:
                 self.begin_rotation(part, event.pos())
@@ -345,7 +469,19 @@ class NestView(QGraphicsView):
             return
         position = self.mapToScene(event.pos())
         self.window_.statusBar().showMessage(f"X {position.x():.1f}   Y {position.y():.1f} mm")
+        if self.drawing is not None:
+            self.update_draft(self.draft_point(event.pos(), event.modifiers()))
+            event.accept()
+            return
         super().mouseMoveEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if self.drawing is not None and event.button() == Qt.LeftButton:
+            # The first click of the double click has already placed the last corner.
+            self.finish_drawing()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def mouseReleaseEvent(self, event):
         if self.rotation_drag is not None:
@@ -360,10 +496,15 @@ class NestView(QGraphicsView):
             self.unsetCursor()
             event.accept()
             return
+        if self.drawing is not None:
+            event.accept()
+            return
         super().mouseReleaseEvent(event)
         self.window_.commit()
 
     def keyPressEvent(self, event):
+        if self.drawing is not None and self.drawing_key(event):
+            return
         step = NUDGE_STEP_LARGE if event.modifiers() & Qt.ShiftModifier else NUDGE_STEP
         moves = {Qt.Key_Left: (-step, 0), Qt.Key_Right: (step, 0), Qt.Key_Up: (0, step), Qt.Key_Down: (0, -step)}
         if event.key() in moves:
@@ -392,6 +533,87 @@ class CopyDialog(QDialog):
         form.addRow(buttons)
 
 
+class CornerDialog(QDialog):
+    """Type the corners of the sheet in order around its edge."""
+
+    def __init__(self, parent, corners):
+        super().__init__(parent)
+        self.setWindowTitle("Plåtens hörn")
+        self.sheet = None
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["X (mm)", "Y (mm)"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        for corner in corners:
+            self.add_row(self.table.rowCount(), corner)
+        add_button = QPushButton("Lägg till hörn")
+        add_button.clicked.connect(lambda checked=False: self.add_after_selected())
+        remove_button = QPushButton("Ta bort hörn")
+        remove_button.clicked.connect(lambda checked=False: self.remove_selected())
+        row = QHBoxLayout()
+        row.addWidget(add_button)
+        row.addWidget(remove_button)
+        self.error = QLabel()
+        self.error.setWordWrap(True)
+        self.error.setStyleSheet(f"color: {COLOR_OUTSIDE.name()}; font-weight: bold;")
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Ange hörnen i ordning runt plåten."))
+        layout.addWidget(self.table)
+        layout.addLayout(row)
+        layout.addWidget(self.error)
+        layout.addWidget(buttons)
+        self.resize(320, 420)
+
+    def add_row(self, row, corner):
+        self.table.insertRow(row)
+        for column, value in enumerate(corner):
+            self.table.setItem(row, column, QTableWidgetItem(f"{value:g}"))
+
+    def add_after_selected(self):
+        current = self.table.currentRow()
+        row = current + 1 if current >= 0 else self.table.rowCount()
+        self.add_row(row, (0.0, 0.0))
+        self.table.setCurrentCell(row, 0)
+
+    def remove_selected(self):
+        if self.table.currentRow() >= 0:
+            self.table.removeRow(self.table.currentRow())
+
+    def corners(self):
+        result = []
+        for row in range(self.table.rowCount()):
+            values = []
+            for column in range(2):
+                item = self.table.item(row, column)
+                text = item.text().strip().replace(",", ".") if item else ""
+                try:
+                    value = float(text)
+                except ValueError:
+                    raise ValueError(f"Rad {row + 1}: \"{text}\" är inget tal.")
+                if not math.isfinite(value):
+                    raise ValueError(f"Rad {row + 1}: \"{text}\" är inget tal.")
+                values.append(value)
+            result.append(tuple(values))
+        return result
+
+    def accept(self):
+        try:
+            self.sheet = Sheet(self.corners())
+        except ValueError as error:
+            self.error.setText(str(error))
+            return
+        super().accept()
+
+
+class CompactList(QListWidget):
+    """Asks for little height, and takes what is free, so the panel only scrolls when it must."""
+
+    def sizeHint(self):
+        return QSize(super().sizeHint().width(), 90)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -405,8 +627,9 @@ class MainWindow(QMainWindow):
 
         self.scene_ = QGraphicsScene(self)
         self.scene_.setSceneRect(-100000, -100000, 200000, 200000)
-        self.sheet = SheetItem(3000.0, 1500.0)
-        self.scene_.addItem(self.sheet)
+        self.sheet_item = SheetItem(Sheet.rectangle(3000.0, 1500.0))
+        self.scene_.addItem(self.sheet_item)
+        self.scene_.addItem(OriginItem())
         self.travel = QGraphicsPathItem()
         self.travel.setPen(cosmetic_pen(COLOR_RAPID, 1.0, Qt.DotLine))
         self.travel.setAcceptedMouseButtons(Qt.NoButton)
@@ -414,6 +637,7 @@ class MainWindow(QMainWindow):
         self.scene_.addItem(self.travel)
         self.view = NestView(self.scene_, self)
         self.setCentralWidget(self.view)
+        self.outside_count = self.overlap_count = 0
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setSingleShot(True)
@@ -445,11 +669,20 @@ class MainWindow(QMainWindow):
         self.sheet_height.editingFinished.connect(self.sheet_changed)
         sheet_form.addRow("Bredd (X):", self.sheet_width)
         sheet_form.addRow("Höjd (Y):", self.sheet_height)
+        row = QHBoxLayout()
+        self.draw_button = self._button("Rita", self.toggle_drawing, row)
+        self.corners_button = self._button("Hörn…", self.edit_corners, row)
+        self.rectangle_button = self._button("Rektangel", self.make_rectangle, row)
+        sheet_form.addRow(row)
+        self.sheet_info = QLabel()
+        self.sheet_info.setWordWrap(True)
+        sheet_form.addRow(self.sheet_info)
         layout.addWidget(sheet_box)
+        self.update_sheet_panel()
 
         parts_box = QGroupBox("Figurer (i skärordning)")
         parts_layout = QVBoxLayout(parts_box)
-        self.part_list = QListWidget()
+        self.part_list = CompactList()
         self.part_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.part_list.itemSelectionChanged.connect(self.list_selection_changed)
         parts_layout.addWidget(self.part_list)
@@ -515,7 +748,15 @@ class MainWindow(QMainWindow):
         dock = QDockWidget("Verktyg", self)
         dock.setObjectName("panel")
         dock.setFeatures(QDockWidget.DockWidgetMovable)
-        dock.setWidget(panel)
+        # Machine screens can be small: the panel scrolls rather than pushing the window off screen.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(panel)
+        scroll.setFixedWidth(panel.maximumWidth() + scroll.verticalScrollBar().sizeHint().width())
+        self.panel_scroll = scroll
+        dock.setWidget(scroll)
         self.addDockWidget(Qt.LeftDockWidgetArea, dock)
 
     def _length_spin(self, low, high, value):
@@ -652,8 +893,7 @@ class MainWindow(QMainWindow):
         self.update_placement_fields()
 
     def check_collisions(self):
-        width, height = self.sheet.width, self.sheet.height
-        regions = [(part, part.sceneBoundingRect(), part.scene_region()) for part in self.parts]
+        regions =[(part, part.sceneBoundingRect(), part.scene_region()) for part in self.parts]
         overlapping = set()
         for i, (part_a, rect_a, region_a) in enumerate(regions):
             for part_b, rect_b, region_b in regions[i + 1:]:
@@ -662,7 +902,7 @@ class MainWindow(QMainWindow):
                     overlapping.add(part_b)
         outside = 0
         for part in self.parts:
-            if not part.placement.inside(width, height):
+            if not part.on_sheet(self.sheet):
                 part.set_state("outside")
                 outside += 1
             elif part in overlapping:
@@ -728,17 +968,29 @@ class MainWindow(QMainWindow):
     def find_free_spot(self, width, height):
         """Lowest, leftmost free position for a box, or beside the sheet if there is none."""
         boxes = [part.placement.bounds() for part in self.parts]
-        xs = sorted({PART_GAP} | {b[2] + PART_GAP for b in boxes})
-        ys = sorted({PART_GAP} | {b[3] + PART_GAP for b in boxes})
-        for y in ys:
-            for x in xs:
-                if x + width > self.sheet.width or y + height > self.sheet.height:
-                    continue
-                if not any(x < b[2] + PART_GAP and x + width + PART_GAP > b[0]
+        sheet = self.sheet
+        x0, y0, x1, y1 = sheet.bounds
+        # A figure that only just fits is better placed tight against the edge than beside the sheet.
+        for margin in (PART_GAP, 0.0):
+            xs = {x0 + margin} | {b[2] + PART_GAP for b in boxes}
+            ys = {y0 + margin} | {b[3] + PART_GAP for b in boxes}
+            if not sheet.is_rectangle:
+                # Corners of a polygon rarely line up with free space, so also try a coarse grid.
+                xs |= {x + margin for x, _ in sheet.corners}
+                ys |= {y + margin for _, y in sheet.corners}
+                xs |= {x0 + margin + k * sheet.width / FREE_SPOT_GRID for k in range(FREE_SPOT_GRID)}
+                ys |= {y0 + margin + k * sheet.height / FREE_SPOT_GRID for k in range(FREE_SPOT_GRID)}
+            for y in sorted(ys):
+                for x in sorted(xs):
+                    if x + width > x1 or y + height > y1:
+                        continue
+                    if any(x < b[2] + PART_GAP and x + width + PART_GAP > b[0]
                            and y < b[3] + PART_GAP and y + height + PART_GAP > b[1] for b in boxes):
-                    return x, y
-        right = max([self.sheet.width] + [b[2] for b in boxes]) + PART_GAP * 5
-        return right, 0.0
+                        continue
+                    if sheet.contains_box(x - margin, y - margin, x + width + margin, y + height + margin):
+                        return x, y
+        right =max([x1] + [b[2] for b in boxes]) + PART_GAP * 5
+        return right, y0
 
     def place_free(self, placement):
         x0, y0, x1, y1 = placement.bounds()
@@ -777,6 +1029,7 @@ class MainWindow(QMainWindow):
             self.copy_parts(selected, dialog.count.value())
 
     def copy_parts(self, parts, count):
+        parts = list(parts)
         added = []
         for _ in range(count):
             for part in parts:
@@ -844,14 +1097,58 @@ class MainWindow(QMainWindow):
         self.refresh()
         self.commit()
 
+    @property
+    def sheet(self):
+        return self.sheet_item.sheet
+
     def sheet_changed(self):
         width, height = self.sheet_width.value(), self.sheet_height.value()
-        if (width, height) != (self.sheet.width, self.sheet.height):
-            self.sheet.set_size(width, height)
-            self.refresh()
-            self.commit()
-            if not self.user_has_view:
-                self.view.fit()
+        if self.sheet.is_rectangle and (width, height) != (self.sheet.width, self.sheet.height):
+            self.set_sheet(Sheet.rectangle(width, height, *self.sheet.bounds[:2]), fit=not self.user_has_view)
+
+    def set_sheet(self, sheet, fit=True):
+        self.sheet_item.set_sheet(sheet)
+        self.update_sheet_panel()
+        self.refresh()
+        self.commit()
+        if fit:
+            self.view.fit()
+
+    def update_sheet_panel(self):
+        """Width and height edit a rectangle; for a polygon they only report its size."""
+        sheet = self.sheet
+        drawing = self.view.drawing is not None
+        self.sheet_width.setValue(sheet.width)
+        self.sheet_height.setValue(sheet.height)
+        self.sheet_width.setEnabled(sheet.is_rectangle and not drawing)
+        self.sheet_height.setEnabled(sheet.is_rectangle and not drawing)
+        self.draw_button.setText("Avbryt" if drawing else "Rita")
+        self.corners_button.setEnabled(not drawing)
+        self.rectangle_button.setEnabled(not sheet.is_rectangle and not drawing)
+        if drawing:
+            self.sheet_info.setText("Klicka ut hörnen. Avsluta med dubbelklick, Enter eller klick på "
+                                    "första hörnet. Backsteg tar bort senaste hörnet, Esc avbryter. "
+                                    "Shift ger raka kanter.")
+        elif sheet.is_rectangle:
+            self.sheet_info.setText("")
+        else:
+            self.sheet_info.setText(f"Polygon med {len(sheet.corners)} hörn, {sheet.area / 1e6:.2f} m². "
+                                    "Bredd och höjd visar dess yttermått.")
+
+    def toggle_drawing(self):
+        if self.view.drawing is not None:
+            self.view.stop_drawing()
+        else:
+            self.view.start_drawing()
+        self.update_sheet_panel()
+
+    def edit_corners(self):
+        dialog = CornerDialog(self, self.sheet.corners)
+        if dialog.exec_() == QDialog.Accepted:
+            self.set_sheet(dialog.sheet)
+
+    def make_rectangle(self):
+        self.set_sheet(Sheet.rectangle(self.sheet.width, self.sheet.height))
 
     def after_change(self, select=None):
         if select is not None:
@@ -870,7 +1167,7 @@ class MainWindow(QMainWindow):
     # --------------------------------------------------------------------- undo
 
     def current_state(self):
-        return (self.sheet.width, self.sheet.height,
+        return (self.sheet,
                 tuple((p.placement.program, round(p.placement.x, 6), round(p.placement.y, 6),
                        round(p.placement.angle, 6)) for p in self.parts))
 
@@ -885,12 +1182,10 @@ class MainWindow(QMainWindow):
         self.update_title()
 
     def restore(self, state):
-        width, height, figures = state
-        self.sheet.set_size(width, height)
-        self.updating_ui = True
-        self.sheet_width.setValue(width)
-        self.sheet_height.setValue(height)
-        self.updating_ui = False
+        sheet, figures = state
+        self.view.stop_drawing()
+        self.sheet_item.set_sheet(sheet)
+        self.update_sheet_panel()
         for part in list(self.parts):
             self.remove_part(part)
         for program, x, y, angle in figures:
@@ -955,17 +1250,15 @@ class MainWindow(QMainWindow):
 
     def open_project_path(self, path):
         try:
-            width, height, placements = load_project(path)
-        except (OSError, ValueError, KeyError, IndexError, GCodeError) as error:
+            sheet, placements = load_project(path)
+        except (OSError, ValueError, KeyError, IndexError, TypeError, GCodeError) as error:
             QMessageBox.critical(self, "Kan inte öppna projektet", str(error))
             return
+        self.view.stop_drawing()
         for part in list(self.parts):
             self.remove_part(part)
-        self.sheet.set_size(width, height)
-        self.updating_ui = True
-        self.sheet_width.setValue(width)
-        self.sheet_height.setValue(height)
-        self.updating_ui = False
+        self.sheet_item.set_sheet(sheet)
+        self.update_sheet_panel()
         for placement in placements:
             self.add_part(placement)
         self.project_path = path
@@ -991,7 +1284,7 @@ class MainWindow(QMainWindow):
 
     def write_project(self, path):
         try:
-            save_project(path, self.sheet.width, self.sheet.height, [p.placement for p in self.parts])
+            save_project(path, self.sheet, [p.placement for p in self.parts])
         except OSError as error:
             QMessageBox.critical(self, "Kan inte spara", str(error))
             return False

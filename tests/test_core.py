@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import sys
@@ -7,7 +8,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from plasmanest.gcode import GCodeError, Program, load_program, tokenize
-from plasmanest.nest import Placement, export_gcode, load_project, material_warning, save_project
+from plasmanest.nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
 
 SAMPLES = os.path.join(os.path.dirname(__file__), "..", "samples")
 BASIC = """G21
@@ -250,19 +251,155 @@ def test_material_warning():
     assert "b" in material_warning([Placement(a), Placement(b)])
 
 
-def test_inside_uses_rotated_bounds():
+def test_rectangle_uses_rotated_bounds():
     program = Program("a", "G21\nG0 X0 Y0\nM3 $0 S1\nG1 X100 Y0\nG1 X100 Y10\nM5 $0\nM2\n")
-    assert Placement(program, 50, 5).inside(100, 10)
-    assert not Placement(program, 50, 5, 90).inside(100, 10)
+    sheet = Sheet.rectangle(100, 10)
+    assert sheet.is_rectangle
+    assert sheet.contains_placement(Placement(program, 50, 5))
+    assert not sheet.contains_placement(Placement(program, 50, 5, 90))
+
+
+# An offcut with a torn off corner and a notch in the top edge.
+OFFCUT = [(0, 0), (800, 0), (800, 250), (520, 500), (300, 500), (300, 300), (150, 300), (150, 500), (0, 500)]
+SQUARE = "G21\nG0 X0 Y0\nM3 $0 S1\nG1 X40 Y0\nG1 X40 Y40\nG1 X0 Y40\nG1 X0 Y0\nM5 $0\nM2\n"
+BAR = "G21\nG0 X0 Y0\nM3 $0 S1\nG1 X200 Y0\nM5 $0\nM2\n"
+
+
+@pytest.mark.parametrize("corners, message", [
+    ([(0, 0), (10, 0)], "tre"),
+    ([(0, 0), (10, 0), (0, 0)], "tre"),
+    ([(0, 0), (10, 0), (20, 0)], "linje"),
+    ([(0, 0), (100, 100), (100, 0), (0, 100)], "korsar"),
+    ([(0, 0), (100, 0), (50, 0), (50, 50)], "viker"),
+    ([(0, 0), (100, 0), (100, 100), (50, 0), (0, 100)], "korsar"),
+])
+def test_invalid_sheets_are_refused(corners, message):
+    with pytest.raises(ValueError, match=message):
+        Sheet(corners)
+
+
+def test_sheet_cleans_repeated_corners_and_reports_size():
+    sheet = Sheet([(0, 0), (0, 0), (10, 0), (10, 20), (0, 20), (0, 0)])
+    assert len(sheet.corners) == 4 and sheet.is_rectangle
+    assert (sheet.width, sheet.height, sheet.area) == (10, 20, 200)
+    triangle = Sheet([(0, 0), (10, 0), (0, 10)])
+    assert not triangle.is_rectangle and triangle.area == 50
+    assert not Sheet([(0, 0), (10, 0), (15, 10), (5, 10)]).is_rectangle
+
+
+def test_points_on_the_edge_are_on_the_sheet():
+    sheet = Sheet(OFFCUT)
+    for point in [(0, 0), (400, 0), (150, 400), (660, 375)]:
+        assert sheet.contains_point(point)
+    for point in [(225, 400), (790, 490), (-1, 100), (900, 100)]:
+        assert not sheet.contains_point(point)
+
+
+def test_segment_over_a_notch_is_off_the_sheet_though_its_ends_are_on_it():
+    sheet = Sheet(OFFCUT)
+    assert sheet.contains_point((100, 400)) and sheet.contains_point((400, 400))
+    assert not sheet.contains_segment((100, 400), (400, 400))
+    assert sheet.contains_segment((100, 200), (400, 200))
+    # Along an edge, and between two corners of the notch's far side.
+    assert sheet.contains_segment((0, 0), (800, 0))
+    assert sheet.contains_segment((150, 300), (300, 300))
+    # Through the notch's corner into the notch, and touching that corner from below.
+    assert not sheet.contains_segment((100, 250), (200, 350))
+    assert sheet.contains_segment((100, 350), (200, 250))
+
+
+@pytest.mark.parametrize("x, y, angle, expected", [
+    (300, 150, 0, True),      # in the open
+    (225, 400, 0, False),     # in the notch
+    (225, 305, 0, False),     # across the notch's bottom edge
+    (740, 450, 0, False),     # in the torn off corner
+    (650, 370, 0, False),     # across the torn edge
+    (780, 20, 0, True),       # tight in a real corner
+    (20, 480, 0, True),       # in the arm left of the notch
+    (2000, 100, 0, False),    # beyond the sheet
+])
+def test_polygon_decides_on_the_cut_geometry(x, y, angle, expected):
+    assert Sheet(OFFCUT).contains_placement(Placement(Program("a", SQUARE), x, y, angle)) is expected
+
+
+def test_cut_bridging_a_notch_is_off_the_sheet():
+    bar = Program("a", BAR)
+    sheet = Sheet(OFFCUT)
+    assert not sheet.contains_placement(Placement(bar, 225, 400))
+    assert sheet.contains_placement(Placement(bar, 225, 200))
+    # Turned upright, the same figure fits in the arm beside the notch.
+    assert sheet.contains_placement(Placement(bar, 75, 400, 90))
+
+
+def test_rapids_may_leave_the_sheet():
+    program = Program("a", SQUARE.replace("G0 X0 Y0", "G0 X-500 Y-500\nG0 X0 Y0"))
+    assert Sheet(OFFCUT).contains_placement(Placement(program, 300, 150))
+
+
+def test_box_check():
+    sheet = Sheet(OFFCUT)
+    assert sheet.contains_box(10, 10, 200, 200)
+    assert not sheet.contains_box(100, 250, 350, 400)
+    assert not sheet.contains_box(-10, 10, 200, 200)
+
+
+def test_sheet_may_lie_anywhere_relative_to_the_origin():
+    sheet = Sheet([(-100, -50), (100, -50), (0, 150)])
+    program = Program("a", SQUARE)
+    assert sheet.contains_placement(Placement(program, 0, 0))
+    assert not sheet.contains_placement(Placement(program, 90, 100))
+
+
+def test_export_does_not_depend_on_the_sheet_shape():
+    # Same placement means the same G-code; the sheet is only a check.
+    placement = Placement(Program("a", SQUARE), 300, 150)
+    text = export_gcode([placement])
+    assert Sheet(OFFCUT).contains_placement(placement)
+    assert export_gcode([placement]) == text
+
+
+def test_project_with_polygon_round_trip(tmp_path):
+    placements = [Placement(Program("a.ngc", SQUARE), 300, 150, 12)]
+    path = tmp_path / "x.pnest"
+    save_project(str(path), Sheet(OFFCUT), placements)
+    sheet, loaded = load_project(str(path))
+    assert sheet.corners == tuple((float(x), float(y)) for x, y in OFFCUT)
+    assert export_gcode(loaded) == export_gcode(placements)
+
+
+def test_version_1_project_opens_as_a_rectangle(tmp_path):
+    path = tmp_path / "old.pnest"
+    path.write_text(json.dumps({
+        "version": 1, "sheet": {"width": 1500, "height": 3000},
+        "programs": [{"name": "a.ngc", "text": SQUARE}],
+        "figures": [{"program": 0, "x": 1, "y": 2, "angle": 3}]}), encoding="utf-8")
+    sheet, loaded = load_project(str(path))
+    assert sheet.is_rectangle and (sheet.width, sheet.height) == (1500, 3000)
+    assert (loaded[0].x, loaded[0].y, loaded[0].angle) == (1, 2, 3)
+
+
+def test_project_with_a_broken_polygon_is_refused(tmp_path):
+    path = tmp_path / "bad.pnest"
+    path.write_text(json.dumps({"version": 2, "sheet": {"corners": [[0, 0], [1, 1]]},
+                                "programs": [], "figures": []}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_project(str(path))
+
+
+def test_unknown_project_version_is_refused(tmp_path):
+    path = tmp_path / "new.pnest"
+    path.write_text(json.dumps({"version": 99}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_project(str(path))
 
 
 def test_project_round_trip(tmp_path):
     a = Program("a.ngc", BASIC)
     placements = [Placement(a, 1, 2, 3), Placement(a, 4, 5, 6)]
     path = tmp_path / "x.pnest"
-    save_project(str(path), 1500, 3000, placements)
-    width, height, loaded = load_project(str(path))
-    assert (width, height) == (1500, 3000)
+    save_project(str(path), Sheet.rectangle(1500, 3000), placements)
+    sheet, loaded = load_project(str(path))
+    assert (sheet.width, sheet.height) == (1500, 3000) and sheet.is_rectangle
     assert [(p.x, p.y, p.angle) for p in loaded] == [(1, 2, 3), (4, 5, 6)]
     assert loaded[0].program is loaded[1].program
     assert export_gcode(loaded) == export_gcode(placements)
