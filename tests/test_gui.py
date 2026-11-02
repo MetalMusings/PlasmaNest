@@ -13,7 +13,7 @@ from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication
 
 from plasmanest.gcode import Program, load_program
-from plasmanest.gui import MainWindow
+from plasmanest.gui import ROTATE_MIN_RADIUS, MainWindow
 
 SAMPLES = os.path.join(os.path.dirname(__file__), "..", "samples")
 FLANS = os.path.join(SAMPLES, "flans.ngc")
@@ -222,3 +222,123 @@ def test_screenshot(window, tmp_path_factory):
     target = os.environ.get("PLASMANEST_SCREENSHOT")
     if target:
         window.grab().save(target)
+
+
+def right_drag(win, points, modifiers=Qt.NoModifier):
+    """Press the right button on the first scene point and follow the others."""
+    viewport = win.view.viewport()
+    views = [to_view(win, *p) for p in points]
+    QTest.mousePress(viewport, Qt.RightButton, modifiers, views[0])
+    for pos in views[1:]:
+        QApplication.sendEvent(viewport, QMouseEvent(QEvent.MouseMove, QPointF(pos), QPointF(viewport.mapToGlobal(pos)),
+                                                     Qt.NoButton, Qt.RightButton, modifiers))
+    QTest.mouseRelease(viewport, Qt.RightButton, modifiers, views[-1])
+    win.refresh()
+
+
+def arc(center, radius, start, end, steps=12):
+    return [(center[0] + radius * math.cos(math.radians(start + (end - start) * k / steps)),
+             center[1] + radius * math.sin(math.radians(start + (end - start) * k / steps)))
+            for k in range(steps + 1)]
+
+
+@pytest.fixture
+def small_sheet(window):
+    """A sheet small enough for figures to be many pixels wide, with flange and washer."""
+    window.sheet_width.setValue(400)
+    window.sheet_height.setValue(250)
+    window.sheet_changed()
+    window.load_paths([FLANS, BRICKA])
+    window.scene_.clearSelection()
+    window.parts[0].set_center(120, 80)
+    window.parts[1].set_center(300, 150)
+    window.fit_view()
+    window.refresh()
+    window.commit()
+    return window
+
+
+def test_right_drag_rotates_figure_after_the_pointer(small_sheet):
+    part = small_sheet.parts[0]
+    # Start on the solid material to the right of the centre, go a quarter turn counter-clockwise.
+    right_drag(small_sheet, arc((120, 80), 40, 0, 90))
+    assert part.isSelected()
+    assert part.placement.angle == pytest.approx(90, abs=2)
+    assert (part.placement.x, part.placement.y) == pytest.approx((120, 80))
+    assert part.rotation() == pytest.approx(part.placement.angle)
+
+
+def test_right_drag_clockwise_gives_the_opposite_angle(small_sheet):
+    right_drag(small_sheet, arc((120, 80), 40, 0, -30))
+    assert small_sheet.parts[0].placement.angle == pytest.approx(330, abs=2)
+
+
+def test_right_drag_with_ctrl_snaps_to_steps(small_sheet):
+    part = small_sheet.parts[0]
+    part.set_angle(7)
+    right_drag(small_sheet, arc((120, 80), 40, 0, 50), Qt.ControlModifier)
+    assert part.placement.angle == pytest.approx(60)
+
+
+def test_right_drag_only_affects_the_figure_under_the_pointer(small_sheet):
+    other = small_sheet.parts[1]
+    other.setSelected(True)
+    right_drag(small_sheet, arc((120, 80), 40, 0, 45))
+    assert other.placement.angle == 0 and not other.isSelected()
+    assert small_sheet.parts[0].isSelected()
+
+
+def test_right_drag_on_a_selected_figure_rotates_the_group_rigidly(small_sheet):
+    a, b = small_sheet.parts
+    a.setSelected(True)
+    b.setSelected(True)
+    before = b.placement.map_point((10, 10))
+    pivot = small_sheet.selection_pivot([a, b])
+    start = math.degrees(math.atan2(80 - pivot[1], 120 - pivot[0]))
+    radius = math.hypot(120 - pivot[0], 80 - pivot[1])
+    right_drag(small_sheet, arc(pivot, radius, start, start + 90))
+    assert a.placement.angle == pytest.approx(90, abs=2)
+    assert a.placement.angle == pytest.approx(b.placement.angle)
+    turned = math.radians(a.placement.angle)
+    dx, dy = before[0] - pivot[0], before[1] - pivot[1]
+    expected = (pivot[0] + dx * math.cos(turned) - dy * math.sin(turned),
+                pivot[1] + dx * math.sin(turned) + dy * math.cos(turned))
+    assert b.placement.map_point((10, 10)) == pytest.approx(expected, abs=1e-6)
+
+
+def test_pointer_near_the_centre_does_not_spin_the_figure(small_sheet):
+    part = small_sheet.parts[0]
+    scale = abs(small_sheet.view.transform().m11())
+    near = (ROTATE_MIN_RADIUS - 5) / scale
+    right_drag(small_sheet, [(120, 80), (120 + near, 80), (120, 80 + near), (120 - near, 80)])
+    assert part.placement.angle == 0
+    # Leaving the dead zone starts from the angle there, without a jump.
+    right_drag(small_sheet, [(120, 80), (120, 120)])
+    assert part.placement.angle == pytest.approx(0, abs=1e-6)
+
+
+def test_right_click_without_moving_only_selects(small_sheet):
+    part = small_sheet.parts[0]
+    steps = small_sheet.undo_index
+    right_drag(small_sheet, [(160, 80)])
+    assert part.isSelected() and part.placement.angle == 0
+    assert small_sheet.undo_index == steps
+
+
+def test_right_drag_on_empty_space_still_pans(small_sheet):
+    origin = small_sheet.view.mapToScene(QPoint(300, 300))
+    right_drag(small_sheet, [(200, 230), (250, 230)])
+    assert small_sheet.view.mapToScene(QPoint(300, 300)).x() != pytest.approx(origin.x())
+    assert [p.placement.angle for p in small_sheet.parts] == [0, 0]
+
+
+def test_rotation_by_mouse_is_one_undo_step_and_reaches_the_export(small_sheet, tmp_path):
+    part = small_sheet.parts[0]
+    steps = small_sheet.undo_index
+    right_drag(small_sheet, arc((120, 80), 40, 0, 90))
+    assert small_sheet.undo_index == steps + 1
+    ngc = tmp_path / "n.ngc"
+    small_sheet.export_to(str(ngc))
+    assert f"a={part.placement.angle:.6f}".rstrip("0") in ngc.read_text()
+    small_sheet.undo()
+    assert small_sheet.parts[0].placement.angle == 0

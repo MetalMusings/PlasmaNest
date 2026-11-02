@@ -22,6 +22,7 @@ NUDGE_STEP = 1.0       # mm per arrow key press
 NUDGE_STEP_LARGE = 10.0
 HANDLE_DISTANCE = 42   # pixels from the figure to the rotation handle
 ROTATE_SNAP = 15.0     # degrees with Ctrl held
+ROTATE_MIN_RADIUS = 15 # pixels from the pivot; closer than this the angle is too jumpy
 
 COLOR_CUT = QColor("#1565c0")
 COLOR_SELECTED = QColor("#00a152")
@@ -221,7 +222,10 @@ class PartItem(QGraphicsItem):
 
 
 class NestView(QGraphicsView):
-    """Zoom with the wheel, pan with the middle or right button."""
+    """Zoom with the wheel, pan with the middle button or by right-dragging empty space.
+
+    Right-dragging a figure rotates it, or the whole selection if it is part of one.
+    """
 
     def __init__(self, scene, window):
         super().__init__(scene)
@@ -238,6 +242,57 @@ class NestView(QGraphicsView):
         self.setFocusPolicy(Qt.StrongFocus)
         self.scale(1, -1)
         self.pan_from = None
+        self.rotation_drag = None
+
+    def part_at(self, pos):
+        for item in self.items(pos):
+            while item is not None:
+                if isinstance(item, PartItem):
+                    return item
+                item = item.parentItem()
+        return None
+
+    def pointer_angle(self, pos, pivot):
+        """Angle from pivot to a view position, or None while too close to be reliable."""
+        center = self.mapFromScene(QPointF(*pivot))
+        if math.hypot(pos.x() - center.x(), pos.y() - center.y()) < ROTATE_MIN_RADIUS:
+            return None
+        position = self.mapToScene(pos)
+        return math.degrees(math.atan2(position.y() - pivot[1], position.x() - pivot[0]))
+
+    def begin_rotation(self, part, pos):
+        if not part.isSelected():
+            self.scene().clearSelection()
+            part.setSelected(True)
+        window = self.window_
+        selected = window.selected_parts()
+        pivot = window.selection_pivot(selected)
+        self.rotation_drag = {
+            "pivot": pivot,
+            "originals": [(p, p.placement.x, p.placement.y, p.placement.angle) for p in selected],
+            "grab_angle": self.pointer_angle(pos, pivot),
+        }
+        self.setCursor(Qt.CrossCursor)
+
+    def continue_rotation(self, event):
+        drag = self.rotation_drag
+        pointer = self.pointer_angle(event.pos(), drag["pivot"])
+        if pointer is None:
+            return
+        if drag["grab_angle"] is None:
+            drag["grab_angle"] = pointer
+        degrees = pointer - drag["grab_angle"]
+        if event.modifiers() & Qt.ControlModifier:
+            # One figure snaps to whole steps of its angle, a group to whole steps of the turn.
+            base = drag["originals"][0][3] if len(drag["originals"]) == 1 else 0.0
+            degrees = round((base + degrees) / ROTATE_SNAP) * ROTATE_SNAP - base
+        self.window_.rotate_parts(drag["originals"], drag["pivot"], degrees)
+        self.window_.schedule_refresh()
+        if len(drag["originals"]) == 1:
+            text = f"Vinkel {drag['originals'][0][0].placement.angle:.1f}°"
+        else:
+            text = f"Roterar {degrees:+.1f}°"
+        self.window_.statusBar().showMessage(text)
 
     def fit(self):
         sheet = self.window_.sheet
@@ -261,6 +316,12 @@ class NestView(QGraphicsView):
             self.window_.update_handles()
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            part = self.part_at(event.pos())
+            if part is not None:
+                self.begin_rotation(part, event.pos())
+                event.accept()
+                return
         if event.button() in (Qt.MiddleButton, Qt.RightButton):
             self.pan_from = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
@@ -269,6 +330,10 @@ class NestView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self.rotation_drag is not None:
+            self.continue_rotation(event)
+            event.accept()
+            return
         if self.pan_from is not None:
             delta = event.pos() - self.pan_from
             self.pan_from = event.pos()
@@ -283,6 +348,13 @@ class NestView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self.rotation_drag is not None:
+            self.rotation_drag = None
+            self.unsetCursor()
+            self.window_.refresh()
+            self.window_.commit()
+            event.accept()
+            return
         if self.pan_from is not None:
             self.pan_from = None
             self.unsetCursor()
@@ -431,8 +503,10 @@ class MainWindow(QMainWindow):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
-        help_label = QLabel("Vänsterdrag: flytta eller markera. Grön ring: rotera.\n"
-                            "Hjul: zooma. Shift+hjul: rotera. Höger-/mittendrag: panorera.\n"
+        help_label = QLabel("Vänsterdrag: flytta eller markera.\n"
+                            "Högerdrag på figur: rotera (Ctrl: steg om 15°).\n"
+                            "Hjul: zooma. Shift+hjul: rotera.\n"
+                            "Högerdrag på tom yta eller mittendrag: panorera.\n"
                             "Pilar: flytta 1 mm (Shift: 10 mm).")
         help_label.setWordWrap(True)
         help_label.setStyleSheet("color: #607d8b;")
@@ -742,18 +816,27 @@ class MainWindow(QMainWindow):
         selected = self.selected_parts()
         if not selected:
             return
-        boxes = [p.placement.bounds() for p in selected]
-        px = (min(b[0] for b in boxes) + max(b[2] for b in boxes)) / 2
-        py = (min(b[1] for b in boxes) + max(b[3] for b in boxes)) / 2
-        radians = math.radians(degrees)
-        c, s = math.cos(radians), math.sin(radians)
-        for part in selected:
-            dx, dy = part.placement.x - px, part.placement.y - py
-            part.set_angle(part.placement.angle + degrees)
-            if len(selected) > 1:
-                part.set_center(px + c * dx - s * dy, py + s * dx + c * dy)
+        originals = [(p, p.placement.x, p.placement.y, p.placement.angle) for p in selected]
+        self.rotate_parts(originals, self.selection_pivot(selected), degrees)
         self.refresh()
         self.commit()
+
+    def selection_pivot(self, parts):
+        """Centre of rotation: a figure's own centre, or the middle of a group's bounds."""
+        if len(parts) == 1:
+            return parts[0].placement.x, parts[0].placement.y
+        boxes = [p.placement.bounds() for p in parts]
+        return ((min(b[0] for b in boxes) + max(b[2] for b in boxes)) / 2,
+                (min(b[1] for b in boxes) + max(b[3] for b in boxes)) / 2)
+
+    def rotate_parts(self, originals, pivot, degrees):
+        """Set figures to their original (part, x, y, angle) turned by degrees around pivot."""
+        radians = math.radians(degrees)
+        c, s = math.cos(radians), math.sin(radians)
+        for part, x, y, angle in originals:
+            dx, dy = x - pivot[0], y - pivot[1]
+            part.set_angle(angle + degrees)
+            part.set_center(pivot[0] + c * dx - s * dy, pivot[1] + s * dx + c * dy)
 
     def nudge_selection(self, dx, dy):
         for part in self.selected_parts():

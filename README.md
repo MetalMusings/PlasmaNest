@@ -34,13 +34,13 @@ Testa gärna med filerna i `samples/`.
 | Läsa in G-kod | **Läs in…** eller Ctrl+L. Figuren läggs på en ledig plats på plåten. |
 | Plåtens storlek | Bredd och höjd i panelen. Plåtens nedre vänstra hörn är G-kodens X0 Y0. |
 | Flytta | Dra med vänster musknapp, skriv X/Y i panelen, eller använd piltangenterna (1 mm, med Shift 10 mm). |
-| Rotera | Dra i den gröna ringen (Ctrl ger steg om 15°), Shift+mushjul, tangenten R, knapparna i panelen, eller skriv vinkeln. |
+| Rotera | Håll höger musknapp på figuren och dra runt den, så följer figuren muspekaren (Ctrl ger steg om 15°). Det går också med den gröna ringen, Shift+mushjul, tangenten R, knapparna i panelen, eller genom att skriva vinkeln. |
 | Markera flera | Dra en ruta på tom yta, eller Ctrl-klicka. Flera figurer roterar som en grupp. |
 | Kopiera | **Kopiera…** eller Ctrl+D, och ange antal. Kopiorna läggs på lediga platser. |
 | Ta bort | **Ta bort** (markerade figurer) eller **Ta bort hela G-koden** (alla kopior av filen). |
 | Skärordning | Listan visar ordningen. Ändra med **Skär tidigare** och **Skär senare**. |
 | Ångra | Ctrl+Z. Gör om med Ctrl+Y (Linux: Ctrl+Shift+Z). |
-| Vy | Mushjul zoomar, höger- eller mittenknapp panorerar, F anpassar till fönstret. |
+| Vy | Mushjul zoomar, mittenknappen eller högerdrag på tom yta panorerar, F anpassar till fönstret. |
 
 Figurer som ligger utanför plåten blir **röda** och figurer som överlappar blir **orange**. Att
 lägga en figur inuti ett hål i en annan räknas inte som överlapp. Kontrollen gäller den
