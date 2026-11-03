@@ -651,3 +651,125 @@ def test_export_goes_where_the_latest_file_button_looks(window, tmp_path, monkey
     assert max(glob.glob(f"{directory}/*.ngc"), key=os.path.getctime) == str(directory / "a.ngc")
     assert window.export_to(str(tmp_path / "elsewhere.ngc"))
     assert "hittar bara filer i" in window.statusBar().currentMessage()
+
+
+def test_embedded_mode_announces_the_window_and_stops_on_sigterm(tmp_path):
+    import signal
+    import subprocess
+    import time
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", HOME=str(tmp_path))
+    root = os.path.join(os.path.dirname(__file__), "..")
+    process = subprocess.Popen([sys.executable, os.path.join(root, "plasmanest.py"), "--embed"],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+    try:
+        line = process.stdout.readline()
+        assert int(line) > 0
+        time.sleep(0.5)
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(10) == 0
+        # Nothing more on stdout: QtVCP never reads the pipe again.
+        assert process.stdout.read() == b""
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+
+def test_autosave_keeps_unsaved_work(window, tmp_path):
+    from plasmanest import gui
+    path = str(tmp_path / "auto" / "autosave.pnest")
+    assert gui.autosave(window, path) is None
+    window.load_paths([FLANS])
+    assert gui.autosave(window, path) == path
+    window.open_project_path(path)
+    assert len(window.parts) == 1
+
+
+def test_embedded_mode_quits_when_the_host_dies(tmp_path):
+    import subprocess
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", HOME=str(tmp_path))
+    root = os.path.join(os.path.dirname(__file__), "..")
+    process = subprocess.Popen([sys.executable, os.path.join(root, "plasmanest.py"), "--embed"],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+    try:
+        assert int(process.stdout.readline()) > 0
+        process.stdin.close()  # what the kernel does when the host process dies
+        assert process.wait(10) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+
+WRONG_SCREEN_OFFSET = QPointF(-700, 450)  # an embedded window's idea of where it is is wrong
+
+
+def send_with_wrong_screen_pos(win, kind, pos, button=Qt.LeftButton, buttons=Qt.LeftButton):
+    viewport = win.view.viewport()
+    local = QPointF(pos)
+    screen = QPointF(viewport.mapToGlobal(QPoint(0, 0))) + local + WRONG_SCREEN_OFFSET
+    QApplication.sendEvent(viewport, QMouseEvent(kind, local, local, screen, button, buttons, Qt.NoModifier))
+
+
+def test_click_selects_a_figure_even_when_embedded(window):
+    window.load_paths([FLANS])
+    part = window.parts[0]
+    window.scene_.clearSelection()
+    point = to_view(window, *edge_point(part))
+    send_with_wrong_screen_pos(window, QEvent.MouseButtonPress, point)
+    send_with_wrong_screen_pos(window, QEvent.MouseButtonRelease, point, buttons=Qt.NoButton)
+    assert part.isSelected()
+
+
+def test_wheel_zoom_keeps_the_point_under_the_pointer_even_when_embedded(window):
+    from PyQt5.QtGui import QWheelEvent
+    window.view.fit()
+    viewport = window.view.viewport()
+    pos = QPointF(viewport.width() * 0.8, viewport.height() * 0.25)
+    before = window.view.mapToScene(pos.toPoint())
+    scale_before = abs(window.view.transform().m11())
+    wrong = QPointF(viewport.mapToGlobal(QPoint(0, 0))) + pos + WRONG_SCREEN_OFFSET
+    for _ in range(3):
+        QApplication.sendEvent(viewport, QWheelEvent(pos, wrong, QPoint(0, 0), QPoint(0, 120), Qt.NoButton,
+                                                     Qt.NoModifier, Qt.NoScrollPhase, False))
+    after = window.view.mapToScene(pos.toPoint())
+    assert abs(window.view.transform().m11()) == pytest.approx(scale_before * 1.2 ** 3)
+    assert abs(after.x() - before.x()) < 1.5 / scale_before and abs(after.y() - before.y()) < 1.5 / scale_before
+
+
+def test_tooltip_names_the_figure_even_when_embedded(window):
+    from PyQt5.QtGui import QHelpEvent
+    from PyQt5.QtWidgets import QToolTip
+    window.load_paths([FLANS])
+    part = window.parts[0]
+    viewport = window.view.viewport()
+    point = to_view(window, *edge_point(part))
+    wrong = viewport.mapToGlobal(point) + WRONG_SCREEN_OFFSET.toPoint()
+    QApplication.sendEvent(viewport, QHelpEvent(QEvent.ToolTip, point, wrong))
+    assert QToolTip.text() == part.placement.program.name
+    QToolTip.hideText()
+
+
+def test_menus_are_moved_by_the_embedding_offset_but_not_their_sub_menus(window):
+    from PyQt5.QtWidgets import QMenu
+    from plasmanest.gui import PopupPlacer
+    placer = PopupPlacer(window, lambda w: QPoint(300, -120))
+    QApplication.instance().installEventFilter(placer)
+    try:
+        menu = QMenu(window)
+        sub = menu.addMenu("Under")
+        sub.addAction("x")
+        menu.popup(QPoint(400, 400))
+        QApplication.processEvents()
+        assert menu.pos() == QPoint(700, 280)
+        sub.popup(QPoint(500, 500))
+        QApplication.processEvents()
+        assert sub.pos() == QPoint(500, 500)
+        sub.close()
+        menu.close()
+        # Popups of other windows are left alone.
+        other = QMenu()
+        other.popup(QPoint(400, 400))
+        QApplication.processEvents()
+        assert other.pos() == QPoint(400, 400)
+        other.close()
+    finally:
+        QApplication.instance().removeEventFilter(placer)

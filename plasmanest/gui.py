@@ -2,17 +2,18 @@
 
 import math
 import os
+import signal
 import sys
 
-from PyQt5.QtCore import QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import (QBrush, QColor, QKeySequence, QPainter, QPainterPath, QPainterPathStroker,
+from PyQt5.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, QSize, QSocketNotifier, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import (QBrush, QColor, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPainterPathStroker,
                          QPen, QPolygonF)
 from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox, QDialog,
                              QDialogButtonBox, QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
                              QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsSimpleTextItem,
                              QGraphicsView, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem,
                              QMainWindow, QMessageBox, QPushButton, QScrollArea, QSpinBox, QTableWidget,
-                             QTableWidgetItem, QVBoxLayout, QWidget)
+                             QTableWidgetItem, QToolTip, QVBoxLayout, QWidget)
 
 from . import machine
 from .gcode import GCodeError, load_program
@@ -27,6 +28,9 @@ NUDGE_STEP_LARGE = 10.0
 HANDLE_DISTANCE = 42   # pixels from the figure to the rotation handle
 ROTATE_SNAP = 15.0     # degrees with Ctrl held
 ROTATE_MIN_RADIUS = 15 # pixels from the pivot; closer than this the angle is too jumpy
+
+# Where unsaved work goes when QtPlasmaC ends an embedded PlasmaNest.
+AUTOSAVE_FILE = os.path.join(os.path.dirname(machine.POINTS_FILE), "autosave.pnest")
 
 # QtPlasmaC's user button "latest-file <dir>" opens the newest .ngc in this directory.
 NC_FILES = os.path.join(os.path.expanduser("~"), "linuxcnc", "nc_files")
@@ -431,8 +435,48 @@ class NestView(QGraphicsView):
         factor = 1.2 ** steps
         current = abs(self.transform().m11())
         if 0.005 < current * factor < 200:
+            # Keep the point under the pointer still. Qt's AnchorUnderMouse uses the screen position,
+            # which is wrong when PlasmaNest is embedded in QtPlasmaC.
+            anchor = event.position().toPoint() if hasattr(event, "position") else event.pos()
+            before = self.mapToScene(anchor)
+            self.setTransformationAnchor(QGraphicsView.NoAnchor)
             self.scale(factor, factor)
+            after = self.mapToScene(anchor)
+            self.translate(after.x() - before.x(), after.y() - before.y())
+            self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
             self.window_.update_handles()
+
+    MOUSE_EVENTS = (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseMove,
+                    QEvent.MouseButtonDblClick)
+
+    def viewportEvent(self, event):
+        """Give mouse events a screen position that agrees with the view's own mapping.
+
+        The scene finds the figure under a click by mapping the screen position back to the view.
+        An embedded window does not know where it is on the screen, so that misses the figure.
+        """
+        if event.type() == QEvent.ToolTip:
+            # Same problem for tooltips: find the item from the view's own position, and show the
+            # tip at the pointer's real screen position, which comes from the X server.
+            item = self.itemAt(event.pos())
+            while item is not None and not item.toolTip():
+                item = item.parentItem()
+            if item is not None:
+                QToolTip.showText(event.globalPos(), item.toolTip(), self.viewport())
+            else:
+                QToolTip.hideText()
+                event.ignore()
+            return True
+        if event.type() in self.MOUSE_EVENTS:
+            local = event.localPos()
+            screen = QPointF(self.viewport().mapToGlobal(QPoint(0, 0))) + local
+            if screen != event.screenPos():
+                fixed = QMouseEvent(event.type(), local, event.windowPos(), screen, event.button(),
+                                    event.buttons(), event.modifiers())
+                result = super().viewportEvent(fixed)
+                event.setAccepted(fixed.isAccepted())
+                return result
+        return super().viewportEvent(event)
 
     def mousePressEvent(self, event):
         if self.drawing is not None and event.button() == Qt.LeftButton:
@@ -1647,12 +1691,117 @@ class MainWindow(QMainWindow):
             event.ignore()
 
 
-def main():
-    app = QApplication(sys.argv)
+def announce_window(window, stream=None):
+    """Embedded mode: tell the host our X11 window id on the first line, then go quiet.
+
+    QtVCP reads one line from our stdout and never empties the pipe again, so anything
+    printed later could fill it and freeze PlasmaNest.
+    """
+    stream = stream or sys.stdout
+    stream.write(f"{int(window.winId())}\n")
+    stream.flush()
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, stream.fileno())
+    os.close(devnull)
+
+
+def autosave(window, path=AUTOSAVE_FILE):
+    """Keep unsaved work when PlasmaNest is ended without a chance to ask."""
+    if not window.is_dirty():
+        return None
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        save_project(path, window.sheet, [p.placement for p in window.parts])
+    except OSError:
+        return None
+    return path
+
+
+def x11_offset(window):
+    """How far Qt's idea of the window's screen position is from the real one, or None.
+
+    An embedded window is a child of the host's window, but Qt still treats it as a top-level
+    window and maps to the screen from its position inside the host.
+    """
+    try:
+        from Xlib import display
+    except ImportError:
+        return None
+    try:
+        connection = display.Display()
+        try:
+            root = connection.screen().root
+            ours = connection.create_resource_object("window", int(window.winId()))
+            real = root.translate_coords(ours, 0, 0)
+            return QPoint(real.x, real.y) - window.mapToGlobal(QPoint(0, 0))
+        finally:
+            connection.close()
+    except Exception:
+        return None
+
+
+class PopupPlacer(QObject):
+    """Embedded mode: move menus and drop-down lists opened from the main window to the right place.
+
+    Qt places them from the main window's screen position, which is wrong when embedded.
+    Sub-menus are placed from their parent menu, which is already right, so they are left alone.
+    """
+
+    def __init__(self, window, offset=x11_offset):
+        super().__init__(window)
+        self.window = window
+        self.offset = offset
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Show and isinstance(obj, QWidget) and obj.isWindow() \
+                and obj.windowType() == Qt.Popup:
+            parent = obj.parentWidget()
+            if parent is not None and parent.window() is self.window:
+                offset = self.offset(self.window)
+                if offset is not None and not offset.isNull():
+                    obj.move(obj.pos() + offset)
+        return False
+
+
+def stop_with_host(app, window, stdin_fd=0):
+    """Quit without dialogs when the host ends: on SIGTERM, as QtVCP's _hal_cleanup sends, or when
+    the host's pipe on stdin closes because it died. Unsaved work is saved first."""
+    def stop():
+        autosave(window)
+        app.quit()
+    signal.signal(signal.SIGTERM, lambda *args: QTimer.singleShot(0, stop))
+    # Python only runs signal handlers when it gets control, so wake it up now and then.
+    timer = QTimer(app)
+    timer.timeout.connect(lambda: None)
+    timer.start(250)
+    notifier = QSocketNotifier(stdin_fd, QSocketNotifier.Read, app)
+
+    def stdin_ready():
+        try:
+            data = os.read(stdin_fd, 4096)
+        except OSError:
+            data = b""
+        if not data:
+            notifier.setEnabled(False)
+            stop()
+    notifier.activated.connect(lambda fd: stdin_ready())
+    app._host_watch = (timer, notifier)
+
+
+def main(argv=None):
+    argv = list(sys.argv if argv is None else argv)
+    embed = "--embed" in argv[1:]
+    paths = [a for a in argv[1:] if a != "--embed"]
+    app = QApplication(argv[:1])
     app.setApplicationName(APP_NAME)
     window = MainWindow()
+    if embed:
+        announce_window(window)
+        stop_with_host(app, window)
+        app._popup_placer = PopupPlacer(window)
+        app.installEventFilter(app._popup_placer)
+    # Also when embedded: a hidden widget is never painted, even inside the host's container.
     window.show()
-    paths = sys.argv[1:]
     projects = [p for p in paths if p.lower().endswith(".pnest")]
     if projects:
         window.open_project_path(projects[0])
