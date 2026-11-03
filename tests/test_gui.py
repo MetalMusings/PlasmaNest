@@ -1049,3 +1049,51 @@ def test_position_fields_of_a_rectangle_give_its_drawn_corner(window):
     window.scene_.clearSelection()
     window.parts[1].setSelected(True)
     assert window.pos_x_label.text() == "X (vänster kant):"
+
+
+def test_draw_circle_shows_the_diameter_and_types_an_exact_one(window):
+    from plasmanest.shapes import Circle, shape_of
+    zoom_in(window, 200, 200)
+    window.activateWindow()
+    window.toggle_circle()
+    assert window.circle_shape_button.text() == "Avbryt cirkel"
+    mouse(window, QEvent.MouseMove, (200, 200), buttons=Qt.NoButton, button=Qt.NoButton)
+    assert window.view.label.text == "X 200   Y 200"
+    mouse(window, QEvent.MouseButtonPress, (200, 200))
+    for x in (210, 220, 230):
+        mouse(window, QEvent.MouseMove, (x, 200), button=Qt.NoButton)
+    assert window.view.label.text == "Ø 60 mm"
+    mouse(window, QEvent.MouseButtonRelease, (230, 200), buttons=Qt.NoButton)
+    part, = window.parts
+    assert shape_of(part.placement.program) == Circle(200, 200, 60)
+    assert window.rect_box.title() == "Cirkel" and window.size_d.isVisibleTo(window)
+    assert not window.size_w.isVisibleTo(window)
+    assert window.pos_x_label.text() == "X (centrum):" and window.pos_x.value() == 200
+    assert window.size_d.hasFocus()
+    QTest.keyClicks(window.size_d, "75")
+    QTest.keyClick(window.size_d, Qt.Key_Return)
+    assert shape_of(window.parts[0].placement.program).diameter == 75
+    assert window.parts[0].placement.map_point((200, 200)) == pytest.approx((200, 200))  # the centre stays
+
+
+def test_circle_position_fields_move_the_centre(window):
+    from plasmanest.shapes import Circle
+    window.add_shape(Circle(200, 200, 60, kerf=1.2, leadin=5).program())
+    window.pos_x.setValue(50)
+    window.pos_y.setValue(40)
+    placement = window.parts[0].placement
+    assert placement.map_point((200, 200)) == pytest.approx((50, 40))
+
+
+def test_leadin_is_placed_by_pointing_near_the_circle(window):
+    from plasmanest.shapes import Circle, shape_of
+    zoom_in(window, 200, 200)
+    window.add_shape(Circle(200, 200, 60, leadin=5).program())
+    window.place_leadin()
+    mouse(window, QEvent.MouseMove, (200, 232), buttons=Qt.NoButton, button=Qt.NoButton)
+    assert window.view.leadin_choice == pytest.approx(90) and "90°" in window.view.label.text
+    mouse(window, QEvent.MouseButtonPress, (200, 232))
+    c = shape_of(window.parts[0].placement.program)
+    assert c.angle == pytest.approx(90)
+    cut, = [p for p in window.parts[0].placement.program.paths if p.kind == "cut"]
+    assert cut.points[0] == pytest.approx((200, 235)) and cut.points[1] == pytest.approx((200, 230))

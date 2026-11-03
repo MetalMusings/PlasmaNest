@@ -41,6 +41,7 @@ Testa gärna med filerna i `samples/`.
 | Rotera | Håll höger musknapp på figuren och dra runt den, så följer figuren muspekaren (Ctrl ger steg om 15°). Det går också med den gröna ringen, Shift+mushjul, tangenten R, knapparna i panelen, eller genom att skriva vinkeln. |
 | Markera flera | Dra en ruta på tom yta, eller Ctrl-klicka. Flera figurer roterar som en grupp. |
 | Rita rektangel | **Rita rektangel**: en etikett vid muspekaren visar X och Y. Tryck i ett hörn och dra till motsatta hörnet, eller klicka i båda. Etiketten visar bredd × höjd. Hörnen hamnar på hela millimeter, och Esc avbryter. Därefter kan exakt **Bredd** och **Höjd** skrivas i panelen: skriv bredden, tryck Tab, skriv höjden och tryck Enter. Det första hörnet står still. |
+| Rita cirkel | **Rita cirkel**: tryck i centrum och dra ut till kanten, eller klicka i centrum och vid kanten. Etiketten visar X och Y och sedan diametern i hela millimeter. Exakt **Diameter** skrivs i panelen. |
 | Kopiera | **Kopiera…** eller Ctrl+D, och ange antal. Kopiorna läggs på lediga platser. |
 | Ta bort | **Ta bort** (markerade figurer) eller **Ta bort hela G-koden** (alla kopior av filen). |
 | Skärordning | Listan visar ordningen. Ändra med **Skär tidigare** och **Skär senare**. |
@@ -119,21 +120,22 @@ USER_COMMAND_FILE = /home/debian/src/plasmanest/qtplasmac/user_command.py
 - Fliken är spärrad medan maskinen kör, som QtPlasmaC:s andra flikar.
 - Osparat arbete sparas i `~/.plasmanest/autosave.pnest` när QtPlasmaC stängs.
 
-## Rektanglar som ritas i PlasmaNest
+## Rektanglar och cirklar som ritas i PlasmaNest
 
-När en rektangel är markerad visar panelen rutan **Rektangel**:
+När en rektangel eller cirkel är markerad visar panelen rutan **Rektangel** eller **Cirkel**:
 
 | Fält | Betydelse |
 |---|---|
-| Bredd, Höjd | De ritade måtten. |
+| Bredd, Höjd, Diameter | De ritade måtten. |
 | Material | Ur QtPlasmaC:s materialfil. Väljs med `M190` i G-koden, och skärspalten hämtas från materialet. "Aktivt i QtPlasmaC" väljer inget material. |
 | Skär | **Utsida (delen):** banan går en halv skärspalt utanför de ritade måtten, medurs. **Insida (hål):** en halv skärspalt innanför, moturs. |
 | Skärspalt | Hämtas från materialet. Skrivs för hand när inget material är valt. |
-| Inledning | Längd i mm, 0 eller mer. En rak linje vinkelrätt mot kanten, med början i spillet. |
-| Placera inledning | Peka på eller nära rektangeln och klicka där inledningen ska vara. |
+| Inledning | Längd i mm, 0 eller mer. En rak linje vinkelrätt mot kanten (radiell för cirklar), med början i spillet. |
+| Placera inledning | Peka på eller nära figuren och klicka där inledningen ska vara. |
 
-- För en rektangel gäller fälten **X (ritat hörn)** och **Y (ritat hörn)** det ritade hörnet, inte
-  banans yttermått.
+- Fälten **X** och **Y** gäller rektangelns ritade hörn och cirkelns centrum, inte banans yttermått.
+- Delar skärs medurs och hål moturs, cirklar med G2 och G3.
+- Små hål får ingen sänkt hastighet eller överbränning.
 - En ny rektangel får samma inställningar som den senast ändrade.
 - Inställningarna sparas i rektangelns G-kod och finns kvar i projektfiler.
 - En omöjlig inställning vägras med ett rött meddelande, till exempel en inledning som inte får

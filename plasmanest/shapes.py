@@ -5,6 +5,7 @@ files. Reading them back regenerates the G-code and compares it with the program
 hand-edited file is never taken for one.
 """
 
+import math
 import re
 from dataclasses import dataclass, replace
 
@@ -106,6 +107,29 @@ class Rectangle:
     def program(self):
         return Program(self.name, self.gcode())
 
+    # ------------------------------------------------- shared with the other shapes
+
+    @property
+    def anchor(self):
+        """The point that stays put when the shape changes, and that the X and Y fields give."""
+        return self.left, self.bottom
+
+    def nearest(self, point):
+        """(lead-in position, distance in mm) on the drawn outline nearest a point."""
+        edge, at, distance = self.nearest_edge(point)
+        return (edge, round(at, 4)), distance
+
+    def with_leadin_at(self, position):
+        return replace(self, edge=position[0], at=position[1])
+
+    def leadin_segment(self):
+        start, point, _ = self.path()
+        return start, point
+
+    @staticmethod
+    def describe_leadin(position):
+        return f"{EDGE_NAMES[position[0]]} kant"
+
     def nearest_edge(self, point):
         """(edge, fraction, distance in mm) of the drawn edge closest to a point in program coordinates."""
         best = None
@@ -118,6 +142,118 @@ class Rectangle:
             if best is None or distance < best[2]:
                 best = (index, t, distance)
         return best
+
+
+@dataclass(frozen=True)
+class Circle:
+    cx: float
+    cy: float
+    diameter: float
+    inside: bool = False      # cut as a hole: kerf inwards, counter-clockwise (G3)
+    kerf: float = 0.0
+    material: int = None
+    leadin: float = 0.0
+    angle: float = 180.0      # where the lead-in meets the circle, degrees from +X
+
+    @property
+    def offset(self):
+        return (-1 if self.inside else 1) * self.kerf / 2
+
+    @property
+    def path_radius(self):
+        return self.diameter / 2 + self.offset
+
+    def check(self):
+        n = format_number
+        if self.diameter < MIN_SIZE:
+            raise ValueError(f"Cirkeln måste vara minst {n(MIN_SIZE)} mm i diameter.")
+        if self.kerf < 0 or self.leadin < 0:
+            raise ValueError("Skärspalt och inledning kan inte vara negativa.")
+        if self.inside:
+            if self.diameter <= self.kerf:
+                raise ValueError(f"Hålet är för litet för skärspalten {n(self.kerf)} mm.")
+            if self.leadin > self.path_radius:
+                raise ValueError(f"Inledningen {n(self.leadin)} mm får inte plats i hålet.")
+
+    def path(self):
+        """(lead-in start, cut start). The cut is one full circle from the cut start."""
+        a = math.radians(self.angle)
+        ux, uy = math.cos(a), math.sin(a)
+        r = self.path_radius
+        point = (self.cx + r * ux, self.cy + r * uy)
+        side = -1.0 if self.inside else 1.0  # the lead-in starts in the scrap
+        return (point[0] + side * ux * self.leadin, point[1] + side * uy * self.leadin), point
+
+    def gcode(self):
+        self.check()
+        n = format_number
+        start, point = self.path()
+        settings = (f"{PARAMETERS} cx={n(self.cx)} cy={n(self.cy)} diameter={n(self.diameter)} "
+                    f"side={'inside' if self.inside else 'outside'} kerf={n(self.kerf)} "
+                    f"material={'-' if self.material is None else self.material} leadin={n(self.leadin)} "
+                    f"angle={n(self.angle)}")
+        lines = [f";PlasmaNest cirkel {n(self.diameter)} mm", settings, "G21 G40 G90"]
+        if self.material is not None:
+            lines += [f"M190 P{self.material}", "M66 P3 L3 Q1"]
+        lines += ["F#<_hal[plasmac.cut-feed-rate]>", f"G0 X{n(start[0])} Y{n(start[1])}", "M3 $0 S1"]
+        if self.leadin > 0:
+            lines.append(f"G1 X{n(point[0])} Y{n(point[1])}")
+        # Parts clockwise, holes counter-clockwise, as plasma contours are cut.
+        lines.append(f"{'G3' if self.inside else 'G2'} X{n(point[0])} Y{n(point[1])} "
+                     f"I{n(self.cx - point[0])} J{n(self.cy - point[1])}")
+        lines += ["M5 $0", "M2", ""]
+        return "\n".join(lines)
+
+    @property
+    def name(self):
+        return f"{'Hål' if self.inside else 'Cirkel'} Ø{format_number(self.diameter)}"
+
+    def program(self):
+        return Program(self.name, self.gcode())
+
+    @property
+    def anchor(self):
+        return self.cx, self.cy
+
+    def nearest(self, point):
+        dx, dy = point[0] - self.cx, point[1] - self.cy
+        angle = math.degrees(math.atan2(dy, dx)) % 360 if (dx or dy) else self.angle
+        distance = abs(math.hypot(dx, dy) - self.diameter / 2)
+        return round(angle, 2), distance
+
+    def with_leadin_at(self, position):
+        return replace(self, angle=position)
+
+    def leadin_segment(self):
+        return self.path()
+
+    @staticmethod
+    def describe_leadin(position):
+        return f"vid {format_number(round(position))}°"
+
+
+CIRCLE_HEADER = re.compile(r";PlasmaNest cirkel ([0-9.]+) mm")
+
+
+def circle_of(program):
+    """The Circle a program was made from, or None for any other figure."""
+    lines = program.text.lstrip().split("\n")
+    if len(lines) < 2 or not CIRCLE_HEADER.match(lines[0]) or not lines[1].startswith(PARAMETERS):
+        return None
+    try:
+        values = dict(word.split("=", 1) for word in lines[1][len(PARAMETERS):].split())
+        circle = Circle(float(values["cx"]), float(values["cy"]), float(values["diameter"]),
+                        inside=values["side"] == "inside", kerf=float(values["kerf"]),
+                        material=None if values["material"] == "-" else int(values["material"]),
+                        leadin=float(values["leadin"]), angle=float(values["angle"]))
+        return circle if circle.gcode() == program.text else None
+    except (KeyError, ValueError):
+        return None
+
+
+def shape_of(program):
+    """The Rectangle or Circle a program was made from, or None for loaded G-code."""
+    return rectangle_of(program) or circle_of(program)
 
 
 def rectangle_program(x0, y0, x1, y1, **settings):

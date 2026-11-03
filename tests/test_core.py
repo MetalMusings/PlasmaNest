@@ -503,3 +503,45 @@ def test_placement_unmaps_what_it_maps():
     program = load_program(os.path.join(SAMPLES, "flans.ngc"))
     placement = Placement(program, 300, 200, 37)
     assert placement.unmap_point(placement.map_point((12.5, -3))) == pytest.approx((12.5, -3))
+
+
+def test_circle_part_is_cut_clockwise_outside_the_kerf_with_leadin_from_outside():
+    from plasmanest.shapes import Circle, shape_of
+    c = Circle(100, 100, 50, kerf=1.2, material=1, leadin=4)
+    program = c.program()
+    assert shape_of(program) == c and program.name == "Cirkel Ø50"
+    assert "G2 X74.4 Y100 I25.6 J0" in program.text and "M190 P1" in program.text
+    cut, = [p for p in program.paths if p.kind == "cut"]
+    assert cut.points[0] == pytest.approx((70.4, 100)) and cut.points[1] == pytest.approx((74.4, 100))
+    radii = [math.hypot(x - 100, y - 100) for x, y in cut.points[1:]]
+    assert min(radii) == pytest.approx(25.6, abs=1e-6) and max(radii) == pytest.approx(25.6, abs=1e-6)
+
+
+def test_circle_hole_is_cut_counter_clockwise_inside_the_kerf_with_leadin_from_inside():
+    from plasmanest.shapes import Circle, shape_of
+    c = Circle(0, 0, 20, inside=True, kerf=1.6, leadin=5, angle=90)
+    program = c.program()
+    assert shape_of(program) == c and program.name == "Hål Ø20"
+    assert "G3 X0 Y9.2 I0 J-9.2" in program.text
+    cut, = [p for p in program.paths if p.kind == "cut"]
+    assert cut.points[0] == pytest.approx((0, 4.2))
+
+
+def test_impossible_circles_are_refused():
+    from plasmanest.shapes import Circle
+    with pytest.raises(ValueError, match="får inte plats"):
+        Circle(0, 0, 20, inside=True, kerf=1.6, leadin=10).gcode()
+    with pytest.raises(ValueError, match="för litet"):
+        Circle(0, 0, 1.5, inside=True, kerf=1.6).gcode()
+    with pytest.raises(ValueError):
+        Circle(0, 0, 0.5).gcode()
+
+
+def test_circle_nearest_and_export_through_rotation():
+    from plasmanest.shapes import Circle
+    c = Circle(0, 0, 40)
+    assert c.nearest((0, 25)) == (90, pytest.approx(5))
+    assert c.nearest((-19, 0))[0] == 180
+    program = Circle(100, 100, 50, kerf=1.2, leadin=4).program()
+    text = export_gcode([Placement(program, 300, 200, 30)])
+    assert "G2 " in text and "I" in text

@@ -20,7 +20,7 @@ from . import live, machine
 from .gcode import GCodeError, Program, load_program
 from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
 from .materials import available_materials
-from .shapes import EDGE_NAMES, Rectangle, rectangle_of
+from .shapes import Circle, Rectangle, shape_of
 
 APP_NAME = "PlasmaNest"
 PART_GAP = 10.0        # mm between figures placed automatically
@@ -426,16 +426,28 @@ class NestView(QGraphicsView):
 
     # -------------------------------------------------------------- new figures
 
-    def start_rectangle(self):
+    SHAPE_HELP = {
+        "rectangle": "Tryck i första hörnet och dra till motsatta hörnet, eller klicka i båda. Esc avbryter.",
+        "circle": "Tryck i centrum och dra ut till kanten, eller klicka i centrum och sedan vid kanten. "
+                  "Esc avbryter.",
+    }
+
+    def start_shape(self, kind):
         self.stop_drawing()
         self.scene().clearSelection()
-        self.shape_mode = "rectangle"
+        self.shape_mode = kind
         self.shape_start = None
         self.shape_press = None
         self.setCursor(Qt.CrossCursor)
         self.setFocus()
-        self.window_.statusBar().showMessage("Tryck i första hörnet och dra till motsatta hörnet, eller klicka "
-                                             "i båda. Esc avbryter.")
+        self.window_.statusBar().showMessage(self.SHAPE_HELP[kind])
+        self.window_.update_shape_panel()
+
+    def start_rectangle(self):
+        self.start_shape("rectangle")
+
+    def start_circle(self):
+        self.start_shape("circle")
 
     def stop_shape(self):
         self.shape_mode = None
@@ -451,6 +463,12 @@ class NestView(QGraphicsView):
         scene_pos = self.mapToScene(pos)
         return float(round(scene_pos.x())), float(round(scene_pos.y()))
 
+    def circle_diameter(self, pos):
+        """Whole mm, measured from the centre to the pointer."""
+        x0, y0 = self.shape_start
+        scene_pos = self.mapToScene(pos)
+        return float(round(2 * math.hypot(scene_pos.x() - x0, scene_pos.y() - y0)))
+
     def update_shape(self, pos):
         if self.shape_mode == "leadin":
             self.update_leadin(pos)
@@ -462,43 +480,55 @@ class NestView(QGraphicsView):
             return
         x0, y0 = self.shape_start
         path = QPainterPath()
-        path.addRect(QRectF(QPointF(min(x0, x), min(y0, y)), QPointF(max(x0, x), max(y0, y))))
+        if self.shape_mode == "circle":
+            diameter = self.circle_diameter(pos)
+            path.addEllipse(QPointF(x0, y0), diameter / 2, diameter / 2)
+            path.moveTo(x0, y0)
+            path.lineTo(self.mapToScene(pos))
+            text = f"Ø {format_mm(diameter)} mm"
+        else:
+            path.addRect(QRectF(QPointF(min(x0, x), min(y0, y)), QPointF(max(x0, x), max(y0, y))))
+            text = f"{format_mm(abs(x - x0))} × {format_mm(abs(y - y0))} mm"
         self.draft.setPath(path)
-        self.label.set_text(f"{format_mm(abs(x - x0))} × {format_mm(abs(y - y0))} mm", QPointF(x, y))
+        self.label.set_text(text, self.mapToScene(pos))
 
     def finish_shape(self, pos):
         x0, y0 = self.shape_start
-        x1, y1 = self.snap(pos)
         try:
-            program = self.window_.new_rectangle(x0, y0, x1, y1).program()
+            if self.shape_mode == "circle":
+                shape = self.window_.new_circle(x0, y0, self.circle_diameter(pos))
+            else:
+                shape = self.window_.new_rectangle(x0, y0, *self.snap(pos))
+            program = shape.program()
         except ValueError:
-            return False  # too small: keep waiting for the opposite corner
+            return False  # too small: keep waiting for the second point
         self.stop_shape()
         self.window_.add_shape(program)
         return True
 
     def start_leadin(self, part):
-        """Point at or near a rectangle to put its lead-in on the nearest edge."""
+        """Point at or near a drawn figure to put its lead-in at the nearest place on its outline."""
         self.stop_drawing()
         self.shape_mode = "leadin"
         self.leadin_part = part
         self.leadin_choice = None
         self.setCursor(Qt.CrossCursor)
         self.setFocus()
-        self.window_.statusBar().showMessage("Peka på eller nära rektangeln och klicka där inledningen ska "
-                                             "vara. Esc avbryter.")
+        self.window_.statusBar().showMessage("Peka på eller nära figuren och klicka där inledningen ska vara. "
+                                             "Esc avbryter.")
+        self.window_.update_shape_panel()
 
-    LEADIN_REACH = 30  # pixels from the edge that still count as pointing at it
+    LEADIN_REACH = 30  # pixels from the outline that still count as pointing at it
 
     def leadin_at(self, pos):
-        """(edge, fraction) on the rectangle nearest a view position, or None if too far away."""
+        """Lead-in position on the figure nearest a view position, or None if too far away."""
         placement = self.leadin_part.placement
-        rectangle = rectangle_of(placement.program)
+        shape = shape_of(placement.program)
         scene = self.mapToScene(pos)
-        edge, at, distance = rectangle.nearest_edge(placement.unmap_point((scene.x(), scene.y())))
+        position, distance = shape.nearest(placement.unmap_point((scene.x(), scene.y())))
         if distance * abs(self.transform().m11()) > self.LEADIN_REACH:
             return None
-        return edge, round(at, 4)
+        return position
 
     def update_leadin(self, pos):
         choice = self.leadin_at(pos)
@@ -506,25 +536,24 @@ class NestView(QGraphicsView):
         scene = self.mapToScene(pos)
         if choice is None:
             self.draft.setPath(QPainterPath())
-            self.label.set_text("Peka närmare rektangeln", scene)
+            self.label.set_text("Peka närmare figuren", scene)
             return
         placement = self.leadin_part.placement
-        rectangle = rectangle_of(placement.program)
-        trial = Rectangle(**{**rectangle.__dict__, "edge": choice[0], "at": choice[1]})
-        start, point, _ = trial.path()
+        shape = shape_of(placement.program)
+        start, point = shape.with_leadin_at(choice).leadin_segment()
         a, b = placement.map_point(start), placement.map_point(point)
         path = QPainterPath(QPointF(*a))
         path.lineTo(QPointF(*b))
         path.addEllipse(QPointF(*b), 4 / abs(self.transform().m11()), 4 / abs(self.transform().m11()))
         self.draft.setPath(path)
-        self.label.set_text(f"Inledning: {EDGE_NAMES[choice[0]]} kant", scene)
+        self.label.set_text(f"Inledning: {shape.describe_leadin(choice)}", scene)
 
     def finish_leadin(self):
         part, choice = self.leadin_part, self.leadin_choice
         if choice is None:
             return
         self.stop_shape()
-        self.window_.set_leadin_position(part, *choice)
+        self.window_.set_leadin_position(part, choice)
 
     def shape_press_event(self, event):
         if event.button() != Qt.LeftButton:
@@ -542,8 +571,9 @@ class NestView(QGraphicsView):
             self.finish_shape(event.pos())
 
     def shape_release_event(self, event):
-        # A drag ends at the release; a click leaves the first corner set for a second click.
-        if self.shape_mode == "rectangle" and self.shape_start is not None and self.shape_press is not None:
+        # A drag ends at the release; a click leaves the first point set for a second click.
+        if self.shape_mode in ("rectangle", "circle") and self.shape_start is not None \
+                and self.shape_press is not None:
             moved = (event.pos() - self.shape_press).manhattanLength()
             self.shape_press = None
             if moved > QApplication.startDragDistance():
@@ -1217,6 +1247,8 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.rectangle_shape_button = self._button("Rita rektangel", self.toggle_rectangle, row)
         self.rectangle_shape_button.setToolTip("Tryck i ett hörn och dra till motsatta hörnet.")
+        self.circle_shape_button = self._button("Rita cirkel", self.toggle_circle, row)
+        self.circle_shape_button.setToolTip("Tryck i centrum och dra ut till kanten.")
         parts_layout.addLayout(row)
         row = QHBoxLayout()
         self.conversational_button = self._button("Hämta från CONVERSATIONAL", self.load_conversational, row)
@@ -1269,6 +1301,9 @@ class MainWindow(QMainWindow):
         self.size_w_label, self.size_h_label = QLabel("Bredd:"), QLabel("Höjd:")
         rect_form.addRow(self.size_w_label, self.size_w)
         rect_form.addRow(self.size_h_label, self.size_h)
+        self.size_d = self._length_spin(1, 100000, 100)
+        self.size_d_label = QLabel("Diameter:")
+        rect_form.addRow(self.size_d_label, self.size_d)
         self.rect_material = QComboBox()
         self.rect_material.addItem("Aktivt i QtPlasmaC", None)
         for material in self.materials:
@@ -1285,7 +1320,7 @@ class MainWindow(QMainWindow):
         self.rect_leadin.setSuffix(" mm")
         rect_form.addRow("Inledning:", self.rect_leadin)
         self.leadin_button = QPushButton("Placera inledning")
-        self.leadin_button.setToolTip("Peka på eller nära rektangeln och klicka där inledningen ska vara.")
+        self.leadin_button.setToolTip("Peka på eller nära figuren och klicka där inledningen ska vara.")
         self.leadin_button.clicked.connect(lambda checked=False: self.place_leadin())
         rect_form.addRow(self.leadin_button)
         self.rect_error = QLabel()
@@ -1293,7 +1328,7 @@ class MainWindow(QMainWindow):
         self.rect_error.setStyleSheet(f"color: {COLOR_OUTSIDE.name()}; font-weight: bold;")
         self.rect_error.hide()
         rect_form.addRow(self.rect_error)
-        for spin in (self.size_w, self.size_h, self.rect_kerf, self.rect_leadin):
+        for spin in (self.size_w, self.size_h, self.size_d, self.rect_kerf, self.rect_leadin):
             spin.editingFinished.connect(self.rectangle_edited)
         for combo in (self.rect_material, self.rect_side):
             combo.currentIndexChanged.connect(lambda index: self.rectangle_edited())
@@ -1438,22 +1473,29 @@ class MainWindow(QMainWindow):
             if show:
                 part.handle.setPos(0, part.rect.bottom() + HANDLE_DISTANCE / scale)
 
-    def show_rectangle_fields(self, rectangle):
-        self.rect_box.setVisible(rectangle is not None)
-        if rectangle is None:
+    def show_rectangle_fields(self, shape):
+        """The box for a figure drawn in PlasmaNest: a rectangle or a circle."""
+        self.rect_box.setVisible(shape is not None)
+        if shape is None:
             return
+        circle = isinstance(shape, Circle)
+        self.rect_box.setTitle("Cirkel" if circle else "Rektangel")
+        for widget in (self.size_w_label, self.size_w, self.size_h_label, self.size_h):
+            widget.setVisible(not circle)
+        for widget in (self.size_d_label, self.size_d):
+            widget.setVisible(circle)
         self.updating_ui = True
-        for spin, value in ((self.size_w, rectangle.width), (self.size_h, rectangle.height),
-                            (self.rect_kerf, rectangle.kerf), (self.rect_leadin, rectangle.leadin)):
+        sizes = ((self.size_d, shape.diameter),) if circle else ((self.size_w, shape.width), (self.size_h, shape.height))
+        for spin, value in sizes + ((self.rect_kerf, shape.kerf), (self.rect_leadin, shape.leadin)):
             if not spin.hasFocus():
                 spin.setValue(value)
-        index = self.rect_material.findData(rectangle.material)
+        index = self.rect_material.findData(shape.material)
         if index < 0:  # a material that is not in this machine's file
-            self.rect_material.addItem(f"{rectangle.material}: (saknas i materialfilen)", rectangle.material)
+            self.rect_material.addItem(f"{shape.material}: (saknas i materialfilen)", shape.material)
             index = self.rect_material.count() - 1
         self.rect_material.setCurrentIndex(index)
-        self.rect_side.setCurrentIndex(1 if rectangle.inside else 0)
-        self.rect_kerf.setEnabled(rectangle.material is None or self.material_kerf(rectangle.material) is None)
+        self.rect_side.setCurrentIndex(1 if shape.inside else 0)
+        self.rect_kerf.setEnabled(shape.material is None or self.material_kerf(shape.material) is None)
         self.updating_ui = False
 
     def material_kerf(self, number):
@@ -1463,19 +1505,24 @@ class MainWindow(QMainWindow):
         return None
 
     def position_reference(self, placement):
-        """Where the X and Y fields point: the drawn first corner of a PlasmaNest rectangle, else the
-        lower left corner of the cut path's bounds (which include kerf and lead-in)."""
-        rectangle = rectangle_of(placement.program)
-        if rectangle is not None:
-            return placement.map_point((rectangle.left, rectangle.bottom))
+        """Where the X and Y fields point: the drawn corner of a rectangle or the centre of a circle
+        made in PlasmaNest, else the lower left corner of the cut path's bounds (which include kerf
+        and lead-in)."""
+        shape = shape_of(placement.program)
+        if shape is not None:
+            return placement.map_point(shape.anchor)
         return placement.bounds()[:2]
+
+    POSITION_LABELS = {Rectangle: ("X (ritat hörn):", "Y (ritat hörn):"), Circle: ("X (centrum):", "Y (centrum):"),
+                       type(None): ("X (vänster kant):", "Y (nedre kant):")}
 
     def update_placement_fields(self):
         selected = self.selected_parts()
-        rectangle = rectangle_of(selected[0].placement.program) if len(selected) == 1 else None
-        self.show_rectangle_fields(rectangle)
-        self.pos_x_label.setText("X (ritat hörn):" if rectangle else "X (vänster kant):")
-        self.pos_y_label.setText("Y (ritat hörn):" if rectangle else "Y (nedre kant):")
+        shape = shape_of(selected[0].placement.program) if len(selected) == 1 else None
+        self.show_rectangle_fields(shape)
+        x_label, y_label = self.POSITION_LABELS[type(shape)]
+        self.pos_x_label.setText(x_label)
+        self.pos_y_label.setText(y_label)
         if len(selected) != 1:
             return
         x0, y0 = self.position_reference(selected[0].placement)
@@ -1486,46 +1533,49 @@ class MainWindow(QMainWindow):
         self.updating_ui = False
 
     def selected_rectangle(self):
+        """The selected part and the Rectangle or Circle it was drawn as, if just one is selected."""
         selected = self.selected_parts()
         if len(selected) != 1:
             return None, None
-        return selected[0], rectangle_of(selected[0].placement.program)
+        return selected[0], shape_of(selected[0].placement.program)
 
     def rectangle_edited(self):
-        """A field of the rectangle box changed: make the rectangle again with the new settings."""
+        """A field of the figure box changed: make the figure again with the new settings."""
         if self.updating_ui:
             return
-        part, rectangle = self.selected_rectangle()
-        if rectangle is None:
+        part, shape = self.selected_rectangle()
+        if shape is None:
             return
         material = self.rect_material.currentData()
         kerf = self.material_kerf(material) if material is not None else None
-        changed = Rectangle(**{**rectangle.__dict__,
-                               "width": self.size_w.value(), "height": self.size_h.value(),
-                               "material": material, "inside": bool(self.rect_side.currentData()),
-                               "kerf": kerf if kerf is not None else self.rect_kerf.value(),
-                               "leadin": self.rect_leadin.value()})
-        if changed == rectangle:
-            self.show_rectangle_fields(rectangle)  # e.g. the kerf field after choosing a material
+        changes = {"material": material, "inside": bool(self.rect_side.currentData()),
+                   "kerf": kerf if kerf is not None else self.rect_kerf.value(), "leadin": self.rect_leadin.value()}
+        if isinstance(shape, Circle):
+            changes["diameter"] = self.size_d.value()
+        else:
+            changes.update(width=self.size_w.value(), height=self.size_h.value())
+        changed = type(shape)(**{**shape.__dict__, **changes})
+        if changed == shape:
+            self.show_rectangle_fields(shape)  # e.g. the kerf field after choosing a material
             return
         self.replace_rectangle(part, changed)
 
-    def replace_rectangle(self, part, rectangle):
-        """Put a remade rectangle in place of the old one. Its first corner stays put, also when
-        rotated, and it keeps its place in the cutting order."""
+    def replace_rectangle(self, part, shape):
+        """Put a remade figure in place of the old one. Its anchor (a rectangle's drawn corner, a
+        circle's centre) stays put, also when rotated, and it keeps its place in the cutting order."""
         try:
-            program = rectangle.program()
+            program = shape.program()
         except ValueError as error:
             self.rect_error.setText(str(error))
             self.rect_error.show()
-            self.show_rectangle_fields(rectangle_of(part.placement.program))
+            self.show_rectangle_fields(shape_of(part.placement.program))
             return None
         self.rect_error.hide()
-        self.remember_rectangle(rectangle)
+        self.remember_rectangle(shape)
         old = part.placement
-        corner = old.map_point((rectangle.left, rectangle.bottom))
-        moved = Placement(program, 0.0, 0.0, old.angle).map_point((rectangle.left, rectangle.bottom))
-        placement = Placement(program, corner[0] - moved[0], corner[1] - moved[1], old.angle)
+        anchor = old.map_point(shape.anchor)
+        moved = Placement(program, 0.0, 0.0, old.angle).map_point(shape.anchor)
+        placement = Placement(program, anchor[0] - moved[0], anchor[1] - moved[1], old.angle)
         index = self.parts.index(part)
         # Without a selection for a moment the fields would hide and lose the keyboard focus.
         self.updating_ui = True
@@ -1540,27 +1590,33 @@ class MainWindow(QMainWindow):
         return new_part
 
     def place_leadin(self):
-        part, rectangle = self.selected_rectangle()
-        if rectangle is not None:
+        part, shape = self.selected_rectangle()
+        if shape is not None:
             self.view.start_leadin(part)
 
-    def set_leadin_position(self, part, edge, at):
-        rectangle = rectangle_of(part.placement.program)
-        if rectangle is not None:
-            self.replace_rectangle(part, Rectangle(**{**rectangle.__dict__, "edge": edge, "at": at}))
+    def set_leadin_position(self, part, position):
+        shape = shape_of(part.placement.program)
+        if shape is not None:
+            self.replace_rectangle(part, shape.with_leadin_at(position))
 
-    def remember_rectangle(self, rectangle):
-        """New rectangles start with the settings used last."""
-        self.rectangle_defaults = {"inside": rectangle.inside, "material": rectangle.material,
-                                   "kerf": rectangle.kerf, "leadin": rectangle.leadin}
+    def remember_rectangle(self, shape):
+        """New figures start with the settings used last."""
+        self.rectangle_defaults = {"inside": shape.inside, "material": shape.material,
+                                   "kerf": shape.kerf, "leadin": shape.leadin}
+
+    def figure_defaults(self):
+        settings = dict(self.rectangle_defaults)
+        if settings["material"] is not None and self.material_kerf(settings["material"]) is not None:
+            settings["kerf"] = self.material_kerf(settings["material"])
+        return settings
 
     def new_rectangle(self, x0, y0, x1, y1):
         left, right = sorted((x0, x1))
         bottom, top = sorted((y0, y1))
-        settings = dict(self.rectangle_defaults)
-        if settings["material"] is not None and self.material_kerf(settings["material"]) is not None:
-            settings["kerf"] = self.material_kerf(settings["material"])
-        return Rectangle(left, bottom, right - left, top - bottom, **settings)
+        return Rectangle(left, bottom, right - left, top - bottom, **self.figure_defaults())
+
+    def new_circle(self, cx, cy, diameter):
+        return Circle(cx, cy, diameter, **self.figure_defaults())
 
     def placement_edited(self):
         if self.updating_ui:
@@ -1864,27 +1920,36 @@ class MainWindow(QMainWindow):
             self.sheet_info.setText(f"Polygon med {len(sheet.corners)} hörn, {sheet.area / 1e6:.2f} m². "
                                     "Bredd och höjd visar dess yttermått.")
 
-    def toggle_rectangle(self):
-        if self.view.shape_mode is not None:
+    def toggle_shape(self, kind):
+        if self.view.shape_mode == kind:
             self.view.stop_shape()
         else:
-            self.view.start_rectangle()
+            self.view.start_shape(kind)
             self.update_sheet_panel()
         self.update_shape_panel()
 
+    def toggle_rectangle(self):
+        self.toggle_shape("rectangle")
+
+    def toggle_circle(self):
+        self.toggle_shape("circle")
+
     def update_shape_panel(self):
-        self.rectangle_shape_button.setText("Avbryt rektangel" if self.view.shape_mode else "Rita rektangel")
+        mode = self.view.shape_mode
+        self.rectangle_shape_button.setText("Avbryt rektangel" if mode == "rectangle" else "Rita rektangel")
+        self.circle_shape_button.setText("Avbryt cirkel" if mode == "circle" else "Rita cirkel")
 
     def add_shape(self, program):
         """A figure drawn in PlasmaNest, placed where it was drawn."""
         placement = Placement(program, *program.center)
         part = self.add_part(placement)
         self.after_change([part])
-        self.statusBar().showMessage(f"{program.name} mm skapad. Skriv exakt bredd och höjd i panelen om "
-                                     "det behövs.", 10000)
-        # Ready for exact numbers: type the width, Tab, the height, Enter.
-        self.size_w.setFocus()
-        self.size_w.selectAll()
+        self.statusBar().showMessage(f"{program.name} mm skapad. Skriv exakta mått i panelen om det behövs.",
+                                     10000)
+        # Ready for exact numbers: type the width, Tab, the height, Enter (or the diameter, Enter).
+        field = self.size_d if isinstance(shape_of(program), Circle) else self.size_w
+        field.setFocus()
+        field.selectAll()
         return part
 
     def toggle_drawing(self):
