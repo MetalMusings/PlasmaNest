@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import re
 import sys
 
 import pytest
@@ -243,6 +244,19 @@ def test_export_has_no_constructs_the_filter_rejects():
             assert moved
         elif line.startswith("M5"):
             moved = False
+
+
+def test_export_avoids_filter_hole_sensing_bugs():
+    # The filter (2.9.4 and master) crashes on G90.1 arcs with J when hole sensing is on,
+    # and only updates its last position on lines containing X.
+    src = (BASIC.replace("G0 X", "G90.1\nG0 X", 1).replace("I0 J10", "I20 J20")
+           .replace("G1 X10 Y10\nM5", "G1 Y10\nM5"))
+    assert "G90.1" in src and "\nG1 Y10\n" in src
+    text = export_gcode([Placement(Program("a", src), 100, 100, 30)])
+    assert "G90.1" not in text
+    for line in text.splitlines():
+        if re.match(r"G[0-3] ", line):
+            assert " X" in line and " Y" in line, line
 
 
 def test_material_warning():
