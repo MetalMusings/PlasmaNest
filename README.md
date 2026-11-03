@@ -101,6 +101,23 @@ Knappen öppnar den senast exporterade `.ngc`-filen i katalogen. Den fungerar ba
 står still. Exporterar du till en annan katalog hittar knappen inte filen, och statusraden i
 PlasmaNest påminner om det.
 
+## PlasmaNest som flik i QtPlasmaC
+
+PlasmaNest kan visas som fliken **PLASMANEST** i QtPlasmaC (2.9). Det är hittills bara provat i
+QtPlasmaC:s simulator. Lägg till under `[DISPLAY]` i INI-filen och starta om LinuxCNC:
+
+```
+USER_COMMAND_FILE = /home/debian/src/plasmanest/qtplasmac/user_command.py
+```
+
+- PlasmaNest startar när fliken väljs första gången och avslutas med QtPlasmaC. Det körs som ett
+  eget program, så ett fel i PlasmaNest påverkar inte QtPlasmaC.
+- När du går från PLASMANEST till MAIN läses nesten in i förhandsvisningen. Det sker bara om den
+  har ändrats och maskinen står still. Figurer utanför plåten, överlapp och materialvarningar ger
+  ett felmeddelande i stället. Kryssrutan **Läs in i QtPlasmaC vid byte till MAIN** stänger av det.
+- Fliken är spärrad medan maskinen kör, som QtPlasmaC:s andra flikar.
+- Osparat arbete sparas i `~/.plasmanest/autosave.pnest` när QtPlasmaC stängs.
+
 ## Två sorters filer
 
 - **Exportera till QtPlasmaC (.ngc)**, Ctrl+E: filen du öppnar i QtPlasmaC och skär med.

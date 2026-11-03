@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox
                              QMainWindow, QMessageBox, QPushButton, QScrollArea, QSpinBox, QTableWidget,
                              QTableWidgetItem, QToolTip, QVBoxLayout, QWidget)
 
-from . import machine
+from . import live, machine
 from .gcode import GCodeError, load_program
 from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
 
@@ -1056,6 +1056,14 @@ class MainWindow(QMainWindow):
         self.show_rapids.toggled.connect(self.rapids_toggled)
         layout.addWidget(self.show_rapids)
 
+        # Only shown when embedded in QtPlasmaC, see enable_live_export.
+        self.autoload = QCheckBox("Läs in i QtPlasmaC vid byte till MAIN")
+        self.autoload.setChecked(True)
+        self.autoload.setToolTip("Nesten läses in i förhandsvisningen när du går från PLASMANEST till MAIN.")
+        self.autoload.toggled.connect(lambda checked: self.write_live_export())
+        self.autoload.hide()
+        layout.addWidget(self.autoload)
+
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
@@ -1543,6 +1551,44 @@ class MainWindow(QMainWindow):
     def update_title(self):
         name = os.path.basename(self.project_path) if self.project_path else "Namnlös"
         self.setWindowTitle(f"{'*' if self.is_dirty() else ''}{name} - {APP_NAME}")
+        # Called after every change and every undo and redo.
+        if getattr(self, "live_dir", None):
+            self.write_live_export()
+
+    # ------------------------------------------------------------- live export
+
+    def enable_live_export(self, directory):
+        """Embedded in QtPlasmaC: keep the nest exported for the tab to load when going to MAIN."""
+        self.live_dir = directory
+        self.live_state = None
+        self.autoload.show()
+        self.write_live_export()
+
+    def live_problems(self):
+        problems = []
+        if self.outside_count:
+            problems.append(f"{self.outside_count} figurer ligger utanför plåten.")
+        if self.overlap_count:
+            problems.append(f"{self.overlap_count} figurer överlappar varandra.")
+        warning = material_warning([p.placement for p in self.parts])
+        if warning:
+            problems.append(warning)
+        return problems
+
+    def write_live_export(self):
+        if not getattr(self, "live_dir", None):
+            return
+        state = (self.current_state(), self.autoload.isChecked())
+        if state == self.live_state:
+            return
+        try:
+            self.refresh()
+            placements = [p.placement for p in self.parts]
+            gcode = export_gcode(placements) if placements else None
+            live.write(self.live_dir, gcode, len(placements), self.live_problems(), self.autoload.isChecked())
+            self.live_state = state
+        except Exception as error:  # never let the export stop the user's work
+            self.statusBar().showMessage(f"Kunde inte uppdatera nesten för QtPlasmaC: {error}", 15000)
 
     def confirm_discard(self):
         if not self.is_dirty():
@@ -1798,6 +1844,7 @@ def main(argv=None):
     if embed:
         announce_window(window)
         stop_with_host(app, window)
+        window.enable_live_export(live.live_dir())
         app._popup_placer = PopupPlacer(window)
         app.installEventFilter(app._popup_placer)
     # Also when embedded: a hidden widget is never painted, even inside the host's container.

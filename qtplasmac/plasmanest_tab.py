@@ -20,6 +20,9 @@ from PyQt5.QtWidgets import QApplication, QLabel, QPushButton, QStackedLayout, Q
 
 TAB_TITLE = "PLASMANEST"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from plasmanest import live  # noqa: E402 - no Qt, safe to import into QtPlasmaC
 COMMAND = [sys.executable, os.path.join(ROOT, "plasmanest.py"), "--embed"]
 START_TIMEOUT_MS = 15000
 WATCH_MS = 1000
@@ -146,6 +149,60 @@ class PlasmaNestTab(QWidget):
         self.cleanup()
 
 
+class NestLoader:
+    """Loads the live export into QtPlasmaC's preview when leaving the tab for MAIN."""
+
+    def __init__(self, handler, directory=None, machine_idle=None, open_program=None, report_error=None):
+        self.handler = handler
+        self.directory = directory or live.live_dir()
+        self.machine_idle = machine_idle or self.qtvcp_machine_idle
+        self.open_program = open_program or self.qtvcp_open_program
+        self.report_error = report_error or self.qtvcp_report_error
+        self.last_loaded = None
+        self.last_error = None
+
+    def leave_tab(self):
+        if not self.machine_idle():
+            log("maskinen står inte still, nesten läses inte in")
+            return "nothing"
+        status = live.read(self.directory)
+        action, value = live.decide(status, self.last_loaded)
+        if action == "load":
+            self.open_program(status["gcode"])
+            self.last_loaded = value
+            self.last_error = None
+        elif action == "error":
+            if status.get("checksum") != self.last_error:  # once per nest, not at every tab change
+                self.report_error(value)
+                self.last_error = status.get("checksum")
+        return action
+
+    @staticmethod
+    def qtvcp_machine_idle():
+        from qtvcp.core import Status
+        status = Status()
+        return status.is_interp_idle() and not status.is_auto_paused()
+
+    def qtvcp_open_program(self, path):
+        # As QtPlasmaC's own latest-file button does.
+        from qtvcp.core import Action
+        try:
+            self.handler.overlayProgress.setValue(0)
+        except Exception:
+            pass
+        try:
+            self.handler.remove_temp_materials()
+        except Exception:
+            log(traceback.format_exc())
+        Action().OPEN_PROGRAM(path)
+
+    @staticmethod
+    def qtvcp_report_error(text):
+        import linuxcnc
+        from qtvcp.core import Status
+        Status().emit("error", linuxcnc.OPERATOR_ERROR, text)
+
+
 def install(handler):
     """Add the tab to QtPlasmaC's main tab widget, last, and keep it there."""
     try:
@@ -173,13 +230,22 @@ def install(handler):
             if pin is not None:
                 pin.value_changed.connect(lambda value: ensure_tab())
 
+        loader = NestLoader(handler)
+        previous = [tabs.currentWidget()]
+
         def tab_changed(index):
             try:
-                if tabs.widget(index) is tab:
+                widget = tabs.widget(index)
+                if widget is tab:
                     tab.start()
+                elif previous[0] is tab and index == getattr(handler, "MAIN", 0):
+                    loader.leave_tab()
             except Exception:
                 log(traceback.format_exc())
+            finally:
+                previous[0] = tabs.widget(index)
         tabs.currentChanged.connect(tab_changed)
+        handler.plasmanest_loader = loader
         QApplication.instance().aboutToQuit.connect(tab.stop)
         handler.plasmanest_tab = tab
         return tab
