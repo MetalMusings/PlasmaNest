@@ -854,3 +854,116 @@ def wait_until(condition, ms=2000):
             return True
         QTest.qWait(10)
     return condition()
+
+
+def mouse(win, kind, scene_xy, buttons=Qt.LeftButton, button=Qt.LeftButton):
+    viewport = win.view.viewport()
+    pos = QPointF(to_view(win, *scene_xy))
+    QApplication.sendEvent(viewport, QMouseEvent(kind, pos, QPointF(viewport.mapToGlobal(pos.toPoint())),
+                                                 button, buttons, Qt.NoModifier))
+
+
+def zoom_in(win, x, y):
+    """4 pixels per mm, so that clicks land within a quarter mm of the scene point."""
+    from PyQt5.QtGui import QTransform
+    win.user_has_view = True
+    win.view.setTransform(QTransform.fromScale(4, -4))
+    win.view.centerOn(x, y)
+
+
+def test_draw_rectangle_by_dragging_shows_coordinates_then_size(window):
+    zoom_in(window, 220, 90)
+    window.toggle_rectangle()
+    assert window.rectangle_shape_button.text() == "Avbryt rektangel"
+    mouse(window, QEvent.MouseMove, (100.2, 49.8), buttons=Qt.NoButton, button=Qt.NoButton)
+    assert window.view.label.text == "X 100   Y 50"
+    mouse(window, QEvent.MouseButtonPress, (100.2, 49.8))
+    for x, y in ((150, 80), (250, 110), (340.4, 129.6)):
+        mouse(window, QEvent.MouseMove, (x, y), button=Qt.NoButton)
+    assert window.view.label.text == "240 × 80 mm"
+    mouse(window, QEvent.MouseButtonRelease, (340.4, 129.6), buttons=Qt.NoButton)
+    assert len(window.parts) == 1
+    part = window.parts[0]
+    assert part.placement.program.name == "Rektangel 240 × 80"
+    assert part.placement.bounds() == (100, 50, 340, 130)
+    assert window.view.shape_mode is None and not window.view.label.isVisible()
+    assert window.rectangle_shape_button.text() == "Rita rektangel"
+    window.undo()
+    assert window.parts == []
+
+
+def test_draw_rectangle_with_two_clicks(window):
+    zoom_in(window, 450, 400)
+    window.toggle_rectangle()
+    mouse(window, QEvent.MouseButtonPress, (500, 500))
+    mouse(window, QEvent.MouseButtonRelease, (500, 500), buttons=Qt.NoButton)
+    assert window.parts == [] and window.view.shape_start == (500, 500)
+    mouse(window, QEvent.MouseMove, (400, 300), buttons=Qt.NoButton, button=Qt.NoButton)
+    assert window.view.label.text == "100 × 200 mm"
+    mouse(window, QEvent.MouseButtonPress, (400, 300))
+    assert len(window.parts) == 1 and window.parts[0].placement.bounds() == (400, 300, 500, 500)
+
+
+def test_too_small_rectangle_waits_and_escape_cancels(window):
+    zoom_in(window, 500, 510)
+    window.toggle_rectangle()
+    mouse(window, QEvent.MouseButtonPress, (500, 500))
+    mouse(window, QEvent.MouseButtonRelease, (500, 500), buttons=Qt.NoButton)
+    mouse(window, QEvent.MouseButtonPress, (500.3, 520))  # 0 mm wide after rounding
+    assert window.parts == [] and window.view.shape_mode == "rectangle"
+    QTest.keyClick(window.view, Qt.Key_Escape)
+    assert window.view.shape_mode is None and window.parts == []
+    assert window.view.draft.path().isEmpty()
+
+
+def test_drawing_the_sheet_ends_rectangle_drawing(window):
+    window.toggle_rectangle()
+    window.toggle_drawing()
+    assert window.view.shape_mode is None and window.view.drawing == []
+    window.toggle_drawing()
+
+
+def test_exact_size_can_be_typed_right_after_drawing(window):
+    from plasmanest.shapes import rectangle_program
+    window.activateWindow()
+    window.add_shape(rectangle_program(100, 50, 340, 130))
+    assert window.size_w.isVisibleTo(window) and window.size_w.value() == 240 and window.size_h.value() == 80
+    assert window.size_w.hasFocus()
+    QTest.keyClicks(window.size_w, "250")
+    QTest.keyClick(window.size_w, Qt.Key_Tab)
+    assert window.size_h.hasFocus()
+    window.size_h.selectAll()
+    QTest.keyClicks(window.size_h, "120")
+    QTest.keyClick(window.size_h, Qt.Key_Return)
+    part, = window.parts
+    assert part.placement.bounds() == pytest.approx((100, 50, 350, 170))
+    assert part.placement.program.name == "Rektangel 250 × 120"
+    window.undo()
+    assert window.parts[0].placement.bounds() == pytest.approx((100, 50, 350, 130))  # one step per field
+    window.undo()
+    assert window.parts[0].placement.bounds() == pytest.approx((100, 50, 340, 130))
+
+
+def test_resized_rectangle_keeps_its_corner_and_cutting_order(window):
+    from plasmanest.shapes import rectangle_program
+    window.load_paths([FLANS])
+    first = window.add_shape(rectangle_program(100, 50, 340, 130))
+    window.parts.remove(first)
+    window.parts.insert(0, first)
+    window.after_change([first])
+    window.rotate_selection(30)
+    rect = window.parts[0]
+    corner = rect.placement.map_point((100, 50))
+    window.size_h.setValue(200)
+    window.size_edited()
+    rect = window.parts[0]
+    assert rect.placement.program.name == "Rektangel 240 × 200"
+    assert rect.placement.angle == pytest.approx(30)
+    assert rect.placement.map_point((100, 50)) == pytest.approx(corner)
+    assert window.parts[1].placement.program.name == "flans.ngc"
+
+
+def test_size_fields_only_for_rectangles(window):
+    window.load_paths([FLANS])
+    window.parts[0].setSelected(True)
+    assert not window.size_w.isVisibleTo(window)

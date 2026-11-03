@@ -7,8 +7,8 @@ import sys
 import time
 
 from PyQt5.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, QSize, QSocketNotifier, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import (QBrush, QColor, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPainterPathStroker,
-                         QPen, QPolygonF)
+from PyQt5.QtGui import (QBrush, QColor, QFontMetrics, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPainterPathStroker,
+                         QPen, QPolygonF, QTransform)
 from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox, QDialog,
                              QDialogButtonBox, QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
                              QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsSimpleTextItem,
@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox
 from . import live, machine
 from .gcode import GCodeError, Program, load_program
 from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
+from .shapes import rectangle_of, rectangle_program
 
 APP_NAME = "PlasmaNest"
 PART_GAP = 10.0        # mm between figures placed automatically
@@ -57,6 +58,10 @@ def cosmetic_pen(color, width=1.0, style=Qt.SolidLine):
     pen = QPen(color, width, style)
     pen.setCosmetic(True)
     return pen
+
+
+def format_mm(value):
+    return f"{value:.0f}" if abs(value - round(value)) < 1e-9 else f"{value:.1f}"
 
 
 def normalize_angle(angle):
@@ -276,6 +281,45 @@ class PartItem(QGraphicsItem):
         painter.drawPath(self.cut_path)
 
 
+class DraftLabel(QGraphicsItem):
+    """Text beside the pointer while drawing: always the same size and readable on any background."""
+
+    OFFSET = QPointF(14, 14)  # pixels right of and below the pointer
+    PADDING = 4
+
+    def __init__(self):
+        super().__init__()
+        self.text = ""
+        self.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+        self.setAcceptedMouseButtons(Qt.NoButton)
+        self.setZValue(20)
+        self.setVisible(False)
+
+    def set_text(self, text, scene_pos):
+        self.prepareGeometryChange()
+        self.text = text
+        self.setPos(scene_pos)
+        self.setVisible(bool(text))
+        self.update()
+
+    def _rect(self):
+        metrics = QFontMetrics(self.scene().font() if self.scene() else QApplication.font())
+        size = metrics.size(0, self.text)
+        return QRectF(self.OFFSET.x(), self.OFFSET.y(), size.width() + 2 * self.PADDING,
+                      size.height() + 2 * self.PADDING)
+
+    def boundingRect(self):
+        return self._rect().adjusted(-1, -1, 1, 1)
+
+    def paint(self, painter, option, widget=None):
+        rect = self._rect()
+        painter.setPen(QPen(COLOR_DRAFT, 1))
+        painter.setBrush(QBrush(QColor(255, 255, 255, 230)))
+        painter.drawRoundedRect(rect, 3, 3)
+        painter.setPen(QPen(QColor("#263238")))
+        painter.drawText(rect, Qt.AlignCenter, self.text)
+
+
 class NestView(QGraphicsView):
     """Zoom with the wheel, pan with the middle button or by right-dragging empty space.
 
@@ -304,10 +348,17 @@ class NestView(QGraphicsView):
         self.draft.setAcceptedMouseButtons(Qt.NoButton)
         self.draft.setZValue(10)
         scene.addItem(self.draft)
+        self.label = DraftLabel()
+        scene.addItem(self.label)
+        self.shape_mode = None   # "rectangle" while a new figure is being drawn
+        self.shape_start = None  # its first corner, in scene mm
+        self.shape_press = None  # view position of that press, to tell a drag from a click
 
     # ------------------------------------------------------------ polygon drawing
 
     def start_drawing(self):
+        if self.shape_mode is not None:
+            self.stop_shape()
         self.scene().clearSelection()
         self.drawing = []
         self.setCursor(Qt.CrossCursor)
@@ -369,6 +420,75 @@ class NestView(QGraphicsView):
         else:
             return False
         return True
+
+    # -------------------------------------------------------------- new figures
+
+    def start_rectangle(self):
+        self.stop_drawing()
+        self.scene().clearSelection()
+        self.shape_mode = "rectangle"
+        self.shape_start = None
+        self.shape_press = None
+        self.setCursor(Qt.CrossCursor)
+        self.setFocus()
+        self.window_.statusBar().showMessage("Tryck i första hörnet och dra till motsatta hörnet, eller klicka "
+                                             "i båda. Esc avbryter.")
+
+    def stop_shape(self):
+        self.shape_mode = None
+        self.shape_start = None
+        self.shape_press = None
+        self.unsetCursor()
+        self.draft.setPath(QPainterPath())
+        self.label.set_text("", QPointF())
+        self.window_.update_shape_panel()
+
+    def snap(self, pos):
+        """Whole mm, as when drawing the sheet."""
+        scene_pos = self.mapToScene(pos)
+        return float(round(scene_pos.x())), float(round(scene_pos.y()))
+
+    def update_shape(self, pos):
+        x, y = self.snap(pos)
+        if self.shape_start is None:
+            self.draft.setPath(QPainterPath())
+            self.label.set_text(f"X {format_mm(x)}   Y {format_mm(y)}", QPointF(x, y))
+            return
+        x0, y0 = self.shape_start
+        path = QPainterPath()
+        path.addRect(QRectF(QPointF(min(x0, x), min(y0, y)), QPointF(max(x0, x), max(y0, y))))
+        self.draft.setPath(path)
+        self.label.set_text(f"{format_mm(abs(x - x0))} × {format_mm(abs(y - y0))} mm", QPointF(x, y))
+
+    def finish_shape(self, pos):
+        x0, y0 = self.shape_start
+        x1, y1 = self.snap(pos)
+        try:
+            program = rectangle_program(x0, y0, x1, y1)
+        except ValueError:
+            return False  # too small: keep waiting for the opposite corner
+        self.stop_shape()
+        self.window_.add_shape(program)
+        return True
+
+    def shape_press_event(self, event):
+        if event.button() != Qt.LeftButton:
+            self.stop_shape()
+            return
+        if self.shape_start is None:
+            self.shape_start = self.snap(event.pos())
+            self.shape_press = event.pos()
+            self.update_shape(event.pos())
+        else:
+            self.finish_shape(event.pos())
+
+    def shape_release_event(self, event):
+        # A drag ends at the release; a click leaves the first corner set for a second click.
+        if self.shape_start is not None and self.shape_press is not None:
+            moved = (event.pos() - self.shape_press).manhattanLength()
+            self.shape_press = None
+            if moved > QApplication.startDragDistance():
+                self.finish_shape(event.pos())
 
     # ------------------------------------------------------------------- rotation
 
@@ -483,6 +603,10 @@ class NestView(QGraphicsView):
         return super().viewportEvent(event)
 
     def mousePressEvent(self, event):
+        if self.shape_mode is not None and event.button() != Qt.MiddleButton:
+            self.shape_press_event(event)
+            event.accept()
+            return
         if self.drawing is not None and event.button() == Qt.LeftButton:
             if self.near_first_corner(event.pos()):
                 self.finish_drawing()
@@ -521,6 +645,10 @@ class NestView(QGraphicsView):
             event.accept()
             return
         position = self.mapToScene(event.pos())
+        if self.shape_mode is not None:
+            self.update_shape(event.pos())
+            event.accept()
+            return
         self.window_.statusBar().showMessage(f"X {position.x():.1f}   Y {position.y():.1f} mm")
         if self.drawing is not None:
             self.update_draft(self.draft_point(event.pos(), event.modifiers()))
@@ -549,6 +677,10 @@ class NestView(QGraphicsView):
             self.unsetCursor()
             event.accept()
             return
+        if self.shape_mode is not None:
+            self.shape_release_event(event)
+            event.accept()
+            return
         if self.drawing is not None:
             event.accept()
             return
@@ -556,6 +688,9 @@ class NestView(QGraphicsView):
         self.window_.commit()
 
     def keyPressEvent(self, event):
+        if self.shape_mode is not None and event.key() == Qt.Key_Escape:
+            self.stop_shape()
+            return
         if self.drawing is not None and self.drawing_key(event):
             return
         step = NUDGE_STEP_LARGE if event.modifiers() & Qt.ShiftModifier else NUDGE_STEP
@@ -1019,6 +1154,10 @@ class MainWindow(QMainWindow):
         self.copy_button = self._button("Kopiera…", self.copy_selection, row)
         parts_layout.addLayout(row)
         row = QHBoxLayout()
+        self.rectangle_shape_button = self._button("Rita rektangel", self.toggle_rectangle, row)
+        self.rectangle_shape_button.setToolTip("Tryck i ett hörn och dra till motsatta hörnet.")
+        parts_layout.addLayout(row)
+        row = QHBoxLayout()
         self.conversational_button = self._button("Hämta från CONVERSATIONAL", self.load_conversational, row)
         self.conversational_button.setToolTip("Lägger till figurerna som godkänts i QtPlasmaC:s CONVERSATIONAL.")
         self.conversational_button.setVisible(os.path.isdir(os.path.dirname(CONVERSATIONAL_FILE)))
@@ -1048,6 +1187,15 @@ class MainWindow(QMainWindow):
         place_form.addRow("X (vänster kant):", self.pos_x)
         place_form.addRow("Y (nedre kant):", self.pos_y)
         place_form.addRow("Vinkel:", self.angle)
+        # Only for a rectangle drawn in PlasmaNest: its exact size.
+        self.size_w = self._length_spin(1, 100000, 100)
+        self.size_h = self._length_spin(1, 100000, 100)
+        self.size_w_label, self.size_h_label = QLabel("Bredd:"), QLabel("Höjd:")
+        self.size_w.editingFinished.connect(self.size_edited)
+        self.size_h.editingFinished.connect(self.size_edited)
+        place_form.addRow(self.size_w_label, self.size_w)
+        place_form.addRow(self.size_h_label, self.size_h)
+        self.show_size_fields(None)
         row = QHBoxLayout()
         self.rotate_step = QDoubleSpinBox()
         self.rotate_step.setRange(0.01, 180)
@@ -1197,8 +1345,19 @@ class MainWindow(QMainWindow):
             if show:
                 part.handle.setPos(0, part.rect.bottom() + HANDLE_DISTANCE / scale)
 
+    def show_size_fields(self, rectangle):
+        for widget in (self.size_w_label, self.size_w, self.size_h_label, self.size_h):
+            widget.setVisible(rectangle is not None)
+        if rectangle is not None:
+            self.updating_ui = True
+            for spin, value in ((self.size_w, rectangle[2]), (self.size_h, rectangle[3])):
+                if not spin.hasFocus():
+                    spin.setValue(value)
+            self.updating_ui = False
+
     def update_placement_fields(self):
         selected = self.selected_parts()
+        self.show_size_fields(rectangle_of(selected[0].placement.program) if len(selected) == 1 else None)
         if len(selected) != 1:
             return
         x0, y0, _, _ = selected[0].placement.bounds()
@@ -1207,6 +1366,38 @@ class MainWindow(QMainWindow):
             if not spin.hasFocus():
                 spin.setValue(value)
         self.updating_ui = False
+
+    def size_edited(self):
+        """New width or height for a rectangle. Its first corner stays put, also when rotated."""
+        if self.updating_ui:
+            return
+        selected = self.selected_parts()
+        if len(selected) != 1:
+            return
+        part = selected[0]
+        rectangle = rectangle_of(part.placement.program)
+        if rectangle is None:
+            return
+        left, bottom, width, height = rectangle
+        new_width, new_height = self.size_w.value(), self.size_h.value()
+        if abs(new_width - width) < 1e-9 and abs(new_height - height) < 1e-9:
+            return
+        old = part.placement
+        program = rectangle_program(left, bottom, left + new_width, bottom + new_height)
+        corner = old.map_point((left, bottom))
+        moved = Placement(program, 0.0, 0.0, old.angle).map_point((left, bottom))
+        placement = Placement(program, corner[0] - moved[0], corner[1] - moved[1], old.angle)
+        index = self.parts.index(part)
+        # Without a selection for a moment the size fields would hide and lose the keyboard focus.
+        self.updating_ui = True
+        try:
+            self.remove_part(part)
+            new_part = self.add_part(placement)
+            self.parts.remove(new_part)
+            self.parts.insert(index, new_part)  # keep its place in the cutting order
+        finally:
+            self.updating_ui = False
+        self.after_change([new_part])
 
     def placement_edited(self):
         if self.updating_ui:
@@ -1510,7 +1701,32 @@ class MainWindow(QMainWindow):
             self.sheet_info.setText(f"Polygon med {len(sheet.corners)} hörn, {sheet.area / 1e6:.2f} m². "
                                     "Bredd och höjd visar dess yttermått.")
 
+    def toggle_rectangle(self):
+        if self.view.shape_mode is not None:
+            self.view.stop_shape()
+        else:
+            self.view.start_rectangle()
+            self.update_sheet_panel()
+        self.update_shape_panel()
+
+    def update_shape_panel(self):
+        self.rectangle_shape_button.setText("Avbryt rektangel" if self.view.shape_mode else "Rita rektangel")
+
+    def add_shape(self, program):
+        """A figure drawn in PlasmaNest, placed where it was drawn."""
+        placement = Placement(program, *program.center)
+        part = self.add_part(placement)
+        self.after_change([part])
+        self.statusBar().showMessage(f"{program.name} mm skapad. Skriv exakt bredd och höjd i panelen om "
+                                     "det behövs.", 10000)
+        # Ready for exact numbers: type the width, Tab, the height, Enter.
+        self.size_w.setFocus()
+        self.size_w.selectAll()
+        return part
+
     def toggle_drawing(self):
+        if self.view.shape_mode is not None:
+            self.view.stop_shape()
         if self.view.drawing is not None:
             self.view.stop_drawing()
         else:

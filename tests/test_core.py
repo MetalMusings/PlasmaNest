@@ -423,3 +423,29 @@ def test_project_round_trip(tmp_path):
     assert [(p.x, p.y, p.angle) for p in loaded] == [(1, 2, 3), (4, 5, 6)]
     assert loaded[0].program is loaded[1].program
     assert export_gcode(loaded) == export_gcode(placements)
+
+
+def test_rectangle_is_cut_clockwise_from_the_lower_left_corner():
+    from plasmanest.shapes import rectangle_program
+    program = rectangle_program(250, 120, 10, 20)
+    assert program.name == "Rektangel 240 × 100"
+    cut, = [p for p in program.paths if p.kind == "cut"]
+    assert cut.points == [(10, 20), (10, 120), (250, 120), (250, 20), (10, 20)]
+    assert program.center == (130, 70)
+    # Exported like any figure, it obeys the filter's rules.
+    text = export_gcode([Placement(program, 130, 70)])
+    assert "M3" in text and "G40" in text
+
+
+def test_too_small_rectangle_is_refused():
+    from plasmanest.shapes import rectangle_program
+    with pytest.raises(ValueError):
+        rectangle_program(10, 10, 10.5, 50)
+
+
+def test_rectangles_are_recognised_but_not_other_figures():
+    from plasmanest.shapes import rectangle_of, rectangle_program
+    assert rectangle_of(rectangle_program(100, 50, 340, 130)) == (100, 50, 240, 80)
+    assert rectangle_of(load_program(os.path.join(SAMPLES, "flans.ngc"))) is None
+    tampered = rectangle_program(0, 0, 10, 10).text.replace("G1 X10 Y10", "G1 X12 Y10")
+    assert rectangle_of(Program("x", tampered)) is None

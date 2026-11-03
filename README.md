@@ -40,6 +40,7 @@ Testa gärna med filerna i `samples/`.
 | Flytta | Dra med vänster musknapp, skriv X/Y i panelen, eller använd piltangenterna (1 mm, med Shift 10 mm). |
 | Rotera | Håll höger musknapp på figuren och dra runt den, så följer figuren muspekaren (Ctrl ger steg om 15°). Det går också med den gröna ringen, Shift+mushjul, tangenten R, knapparna i panelen, eller genom att skriva vinkeln. |
 | Markera flera | Dra en ruta på tom yta, eller Ctrl-klicka. Flera figurer roterar som en grupp. |
+| Rita rektangel | **Rita rektangel**: en etikett vid muspekaren visar X och Y. Tryck i ett hörn och dra till motsatta hörnet, eller klicka i båda. Etiketten visar bredd × höjd. Hörnen hamnar på hela millimeter, och Esc avbryter. Därefter kan exakt **Bredd** och **Höjd** skrivas i panelen: skriv bredden, tryck Tab, skriv höjden och tryck Enter. Det första hörnet står still. |
 | Kopiera | **Kopiera…** eller Ctrl+D, och ange antal. Kopiorna läggs på lediga platser. |
 | Ta bort | **Ta bort** (markerade figurer) eller **Ta bort hela G-koden** (alla kopior av filen). |
 | Skärordning | Listan visar ordningen. Ändra med **Skär tidigare** och **Skär senare**. |
@@ -117,6 +118,13 @@ USER_COMMAND_FILE = /home/debian/src/plasmanest/qtplasmac/user_command.py
   ett felmeddelande i stället. Kryssrutan **Läs in i QtPlasmaC vid byte till MAIN** stänger av det.
 - Fliken är spärrad medan maskinen kör, som QtPlasmaC:s andra flikar.
 - Osparat arbete sparas i `~/.plasmanest/autosave.pnest` när QtPlasmaC stängs.
+
+## Rektanglar som ritas i PlasmaNest
+
+- De skärs medurs från det första hörnet, utan inledning.
+- Banan följer de ritade måtten och kompenseras inte för skärspalten. Delen blir alltså en halv
+  skärspalt mindre runt om.
+- De har inget eget material, utan skärs med materialet som är aktivt i QtPlasmaC.
 
 ## Två sorters filer
 
