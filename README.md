@@ -35,6 +35,7 @@ Testa gärna med filerna i `samples/`.
 | Rektangulär plåt | Bredd och höjd i panelen. Plåtens nedre vänstra hörn är G-kodens X0 Y0. |
 | Rita plåten | **Rita**, och klicka ut hörnen med musen. Avsluta med dubbelklick, Enter eller klick på första hörnet. Backsteg tar bort senaste hörnet, Esc avbryter och Shift ger raka kanter. Hörnen hamnar på hela millimeter. |
 | Skriva plåtens hörn | **Hörn…** visar hörnen i en tabell, där du kan ändra, lägga till och ta bort dem. Använd den för exakta mått. |
+| Plåt från maskinen | Jogga till plåtens hörn och tryck på användarknappen **Spara punkt** i QtPlasmaC vid varje hörn. Öppna **Från maskinen…** i PlasmaNest, där punkterna dyker upp efter hand. Välj säkerhetsmarginal och tryck **Använd som plåt**. Se nedan hur knappen läggs in. |
 | Tillbaka till rektangel | **Rektangel** ger en rektangel med polygonens yttermått, med hörnet i X0 Y0. |
 | Flytta | Dra med vänster musknapp, skriv X/Y i panelen, eller använd piltangenterna (1 mm, med Shift 10 mm). |
 | Rotera | Håll höger musknapp på figuren och dra runt den, så följer figuren muspekaren (Ctrl ger steg om 15°). Det går också med den gröna ringen, Shift+mushjul, tangenten R, knapparna i panelen, eller genom att skriva vinkeln. |
@@ -53,6 +54,26 @@ Plåten kan ha vilken form som helst så länge kanterna inte korsar varandra, t
 restbit med urtag. Den behöver inte ligga vid G-kodens X0 Y0, som visas med ett lila kors, men
 hörnens koordinater måste stämma med hur plåten ligger i maskinen. Plåtens form är bara en
 kontroll: den påverkar inte G-koden, och QtPlasmaC känner inte till den.
+
+## Spara plåtens hörn från maskinen
+
+Lägg in knappen en gång i QtPlasmaC, under **SETTINGS** → **USER BUTTONS** på en ledig rad:
+
+| Name | Code |
+|---|---|
+| `Spara\punkt` | `%/home/debian/src/plasmanest/save_point.py` |
+
+Tryck **Save**, så dyker knappen upp på MAIN-fliken. Ändra sökvägen om PlasmaNest ligger någon annanstans.
+
+- Maskinen måste vara referenskörd. Varje tryck sparar en punkt, som syns i PlasmaNest. QtPlasmaC
+  visar bara ett meddelande om punkten inte kunde sparas.
+- Är lasern på (knappen **Laser**) sparas punkten under laserkorset, annars punkten under brännaren.
+  Laserns förskjutning läses från `[LASER_OFFSET]` i QtPlasmaC:s prefs-fil.
+- Punkterna sparas i `~/.plasmanest/points.txt` i **maskinkoordinater**. PlasmaNest räknar om dem
+  med det origo LinuxCNC har när plåten skapas, så det går bra att nollställa origo efter mätningen.
+  Nollställer du origo efter att plåten skapats måste du skapa den igen.
+- Ta hörnen i ordning runt plåten. **Rensa alla** innan en ny plåt mäts upp.
+- Säkerhetsmarginalen flyttar varje kant inåt. Blir formen ogiltig av marginalen vägras plåten.
 
 ## Två sorters filer
 

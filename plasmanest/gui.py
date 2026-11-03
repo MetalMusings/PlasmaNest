@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox
                              QMainWindow, QMessageBox, QPushButton, QScrollArea, QSpinBox, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QWidget)
 
+from . import machine
 from .gcode import GCodeError, load_program
 from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
 
@@ -607,6 +608,159 @@ class CornerDialog(QDialog):
         super().accept()
 
 
+class MachineDialog(QDialog):
+    """Sheet corners saved from QtPlasmaC with the Spara punkt button, live as they arrive."""
+
+    POLL_MS = 500
+
+    def __init__(self, parent, path=machine.POINTS_FILE, offsets=machine.current_offsets):
+        super().__init__(parent)
+        self.setWindowTitle("Plåt från maskinen")
+        self.path = path
+        self.read_offsets = offsets
+        self.points = []
+        self.offsets = None
+        self.file_state = False  # never equal to a real state, so the first poll reads the file
+        self.error = None
+        self.sheet = None
+
+        intro = QLabel("Jogga till plåtens hörn i ordning runt plåten och tryck <b>Spara punkt</b> i "
+                       "QtPlasmaC vid varje hörn. Med lasern på sparas punkten under lasern.")
+        intro.setWordWrap(True)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["X (mm)", "Y (mm)", "Sikte", "Sparad"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.coordinates = QLabel()
+        self.coordinates.setWordWrap(True)
+        self.margin = QDoubleSpinBox()
+        self.margin.setRange(0, 500)
+        self.margin.setDecimals(1)
+        self.margin.setValue(5.0)
+        self.margin.setSuffix(" mm")
+        self.margin.valueChanged.connect(lambda value: self.update_result())
+        margin_row = QHBoxLayout()
+        margin_row.addWidget(QLabel("Säkerhetsmarginal från kanten:"))
+        margin_row.addWidget(self.margin)
+        remove_button = QPushButton("Ta bort punkt")
+        remove_button.clicked.connect(lambda checked=False: self.remove_selected())
+        clear_button = QPushButton("Rensa alla")
+        clear_button.clicked.connect(lambda checked=False: self.clear())
+        row = QHBoxLayout()
+        row.addWidget(remove_button)
+        row.addWidget(clear_button)
+        self.result = QLabel()
+        self.result.setWordWrap(True)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.button(QDialogButtonBox.Ok).setText("Använd som plåt")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addWidget(intro)
+        layout.addWidget(self.table)
+        layout.addLayout(row)
+        layout.addWidget(self.coordinates)
+        layout.addLayout(margin_row)
+        layout.addWidget(self.result)
+        layout.addWidget(self.buttons)
+        self.resize(460, 520)
+
+        self.timer = QTimer(self)
+        self.timer.setInterval(self.POLL_MS)
+        self.timer.timeout.connect(self.poll)
+        self.timer.start()
+        self.poll()
+
+    def poll(self):
+        try:
+            info = os.stat(self.path)
+            file_state = (info.st_mtime_ns, info.st_size)
+        except OSError:
+            file_state = None
+        offsets = self.read_offsets()
+        if file_state == self.file_state and offsets == self.offsets:
+            return
+        self.file_state, self.offsets = file_state, offsets
+        try:
+            self.points = machine.read_points(self.path)
+            self.error = None
+        except (OSError, machine.PointsError) as error:
+            self.points = []
+            self.error = str(error)
+        self.show_points()
+
+    def corners(self):
+        return machine.work_corners(self.points, self.offsets)
+
+    def show_points(self):
+        selected = self.table.currentRow()
+        self.table.setRowCount(0)
+        for row, (point, corner) in enumerate(zip(self.points, self.corners())):
+            self.table.insertRow(row)
+            values = [machine.mm(corner[0]), machine.mm(corner[1]), machine.SOURCE_NAMES[point.source],
+                      point.time.split("T")[-1]]
+            for column, value in enumerate(values):
+                self.table.setItem(row, column, QTableWidgetItem(value))
+        if 0 <= selected < self.table.rowCount():
+            self.table.setCurrentCell(selected, 0)
+        if self.offsets is None:
+            self.coordinates.setText("LinuxCNC svarar inte. Punkterna visas med det origo som gällde när "
+                                     "de sparades.")
+        else:
+            o = self.offsets
+            text = f"Arbetskoordinater i {o.name} med nuvarande origo (X {o.g5x[0]:.2f} Y {o.g5x[1]:.2f}"
+            if o.rotation:
+                text += f", rotation {o.rotation:.3f}°"
+            if any(o.g92):
+                text += f", G92 X {o.g92[0]:.2f} Y {o.g92[1]:.2f}"
+            self.coordinates.setText(text + ").")
+        self.update_result()
+
+    def update_result(self):
+        self.sheet = None
+        if self.error:
+            message = self.error
+        elif len(self.points) < 3:
+            message = f"{len(self.points)} punkter sparade. Det behövs minst tre."
+        else:
+            try:
+                self.sheet = Sheet(self.corners()).inset(self.margin.value())
+                message = None
+            except ValueError as error:
+                message = str(error)
+        if message:
+            self.result.setStyleSheet(f"color: {COLOR_OUTSIDE.name()}; font-weight: bold;")
+            self.result.setText(message)
+        else:
+            s = self.sheet
+            self.result.setStyleSheet("")
+            self.result.setText(f"Plåt med {len(s.corners)} hörn, {s.width:.1f} × {s.height:.1f} mm, "
+                                f"{s.area / 1e6:.2f} m² efter marginalen.")
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(self.sheet is not None)
+
+    def rewrite(self, points):
+        try:
+            machine.write_points(points, self.path)
+        except OSError as error:
+            QMessageBox.warning(self, APP_NAME, f"Kunde inte skriva punktfilen:\n{error}")
+        self.file_state = False  # read it back even if the size and time look the same
+        self.poll()
+
+    def remove_selected(self):
+        row = self.table.currentRow()
+        if 0 <= row < len(self.points):
+            self.rewrite(self.points[:row] + self.points[row + 1:])
+
+    def clear(self):
+        self.rewrite([])
+
+    def accept(self):
+        self.poll()
+        if self.sheet is not None:
+            super().accept()
+
+
 class CompactList(QListWidget):
     """Asks for little height, and takes what is free, so the panel only scrolls when it must."""
 
@@ -673,6 +827,9 @@ class MainWindow(QMainWindow):
         self.draw_button = self._button("Rita", self.toggle_drawing, row)
         self.corners_button = self._button("Hörn…", self.edit_corners, row)
         self.rectangle_button = self._button("Rektangel", self.make_rectangle, row)
+        sheet_form.addRow(row)
+        row = QHBoxLayout()
+        self.machine_button = self._button("Från maskinen…", self.sheet_from_machine, row)
         sheet_form.addRow(row)
         self.sheet_info = QLabel()
         self.sheet_info.setWordWrap(True)
@@ -1124,6 +1281,7 @@ class MainWindow(QMainWindow):
         self.sheet_height.setEnabled(sheet.is_rectangle and not drawing)
         self.draw_button.setText("Avbryt" if drawing else "Rita")
         self.corners_button.setEnabled(not drawing)
+        self.machine_button.setEnabled(not drawing)
         self.rectangle_button.setEnabled(not sheet.is_rectangle and not drawing)
         if drawing:
             self.sheet_info.setText("Klicka ut hörnen. Avsluta med dubbelklick, Enter eller klick på "
@@ -1144,6 +1302,11 @@ class MainWindow(QMainWindow):
 
     def edit_corners(self):
         dialog = CornerDialog(self, self.sheet.corners)
+        if dialog.exec_() == QDialog.Accepted:
+            self.set_sheet(dialog.sheet)
+
+    def sheet_from_machine(self):
+        dialog = MachineDialog(self)
         if dialog.exec_() == QDialog.Accepted:
             self.set_sheet(dialog.sheet)
 

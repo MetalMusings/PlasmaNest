@@ -70,6 +70,13 @@ def _distance_to_segment(p, a, b):
     return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
 
 
+def _segments_distance(a, b, c, d):
+    if _segments_touch(a, b, c, d):
+        return 0.0
+    return min(_distance_to_segment(a, c, d), _distance_to_segment(b, c, d),
+               _distance_to_segment(c, a, b), _distance_to_segment(d, a, b))
+
+
 class Sheet:
     """The steel sheet: a simple polygon in G-code coordinates (mm)."""
 
@@ -116,6 +123,49 @@ class Sheet:
                         raise ValueError("Plåtens kanter viker sig tillbaka över varandra.")
                 elif _segments_touch(a, b, c, d):
                     raise ValueError("Plåtens kanter korsar varandra.")
+
+    def inset(self, margin):
+        """The sheet shrunk by margin mm from every edge, or ValueError if that is not a clean polygon."""
+        if margin <= 0:
+            return self
+        # Corners on a straight edge give no offset corner of their own.
+        corners = list(self.corners)
+        changed = True
+        while changed and len(corners) > 3:
+            changed = False
+            for i in range(len(corners)):
+                if _orientation(corners[i - 1], corners[i], corners[(i + 1) % len(corners)]) == 0:
+                    del corners[i]
+                    changed = True
+                    break
+        signed = sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(corners, corners[1:] + corners[:1]))
+        side = 1.0 if signed > 0 else -1.0  # inward is to the left of a counter-clockwise edge
+        lines = []
+        for a, b in zip(corners, corners[1:] + corners[:1]):
+            length = math.hypot(b[0] - a[0], b[1] - a[1])
+            dx, dy = (b[0] - a[0]) / length, (b[1] - a[1]) / length
+            lines.append(((a[0] - side * dy * margin, a[1] + side * dx * margin), (dx, dy)))
+        result = []
+        for (p, d), (q, e) in zip(lines[-1:] + lines[:-1], lines):
+            denominator = d[0] * e[1] - d[1] * e[0]
+            t = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / denominator
+            result.append((p[0] + t * d[0], p[1] + t * d[1]))
+        too_large = ValueError(f"Marginalen {margin:g} mm är för stor för plåtens form.")
+        # An edge that turned around has been swallowed by its neighbours.
+        for (a, b), (c, d) in zip(zip(corners, corners[1:] + corners[:1]), zip(result, result[1:] + result[:1])):
+            if (b[0] - a[0]) * (d[0] - c[0]) + (b[1] - a[1]) * (d[1] - c[1]) <= 0:
+                raise too_large
+        try:
+            sheet = Sheet(result)
+        except ValueError:
+            raise too_large
+        for c, d in sheet.edges:
+            if not self.contains_segment(c, d):
+                raise too_large
+            for a, b in self.edges:
+                if _segments_distance(a, b, c, d) < margin - 1e-6:
+                    raise too_large
+        return sheet
 
     def contains_point(self, point):
         """True if the point is on the sheet, its edge included."""
