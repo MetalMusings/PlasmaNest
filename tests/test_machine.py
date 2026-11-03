@@ -237,3 +237,36 @@ def test_dialog_reports_a_broken_points_file(app, tmp_path):
     dialog = MachineDialog(None, str(path), lambda: None)
     assert "Rad 1" in dialog.result.text() and dialog.sheet is None
     dialog.close()
+
+
+def test_preview_follows_the_points_and_selects_rows(app, tmp_path):
+    from PyQt5.QtCore import QPoint, Qt
+    from PyQt5.QtTest import QTest
+    from plasmanest.gui import MachineDialog
+    path = str(tmp_path / "points.txt")
+    dialog = MachineDialog(None, path, lambda: Offsets())
+    dialog.show()
+    preview = dialog.preview
+    assert preview.corners == []
+    corners = [(0, 0), (1000, 0), (1000, 500)]
+    for x, y in corners:
+        machine.append_point(MachinePoint((x, y), (x, y), "torch", "2026-11-03T10:00:00"), path)
+        dialog.poll()
+    assert preview.corners == corners and preview.sheet is dialog.sheet
+    # Y points up and both axes have the same scale.
+    transform = preview.transform()
+    low, high = preview.to_pixels((0, 0), transform), preview.to_pixels((1000, 500), transform)
+    assert high.y() < low.y() and high.x() > low.x()
+    assert abs((high.x() - low.x()) - 2 * (low.y() - high.y())) < 1e-6
+    # Clicking a point selects its row, and the row is shown in the drawing.
+    QTest.mouseClick(preview, Qt.LeftButton, Qt.NoModifier, high.toPoint() + QPoint(3, 2))
+    assert dialog.table.currentRow() == 2 and preview.selected == 2
+    QTest.mouseClick(preview, Qt.LeftButton, Qt.NoModifier, ((low + high) / 2).toPoint())
+    assert dialog.table.currentRow() == 2
+    # A crossing shape gets no sheet, and the drawing still shows the points.
+    machine.append_point(MachinePoint((0, 500), (0, 500), "torch", "t"), path)
+    machine.append_point(MachinePoint((1000, 250), (1000, 250), "torch", "t"), path)
+    dialog.poll()
+    assert dialog.sheet is None and len(preview.corners) == 5
+    preview.grab()  # paints without errors
+    dialog.close()

@@ -4,13 +4,13 @@ import math
 import os
 import sys
 
-from PyQt5.QtCore import QPointF, QRectF, QSize, Qt, QTimer
+from PyQt5.QtCore import QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import (QBrush, QColor, QKeySequence, QPainter, QPainterPath, QPainterPathStroker,
                          QPen, QPolygonF)
 from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox, QDialog,
                              QDialogButtonBox, QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
                              QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsSimpleTextItem,
-                             QGraphicsView, QGroupBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+                             QGraphicsView, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem,
                              QMainWindow, QMessageBox, QPushButton, QScrollArea, QSpinBox, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QWidget)
 
@@ -612,6 +612,107 @@ class CornerDialog(QDialog):
         super().accept()
 
 
+class PointsPreview(QWidget):
+    """Drawing of the measured corners, the edges between them and the sheet after the margin."""
+
+    pointClicked = pyqtSignal(int)
+    PADDING = 28      # pixels around the drawing
+    MIN_SPAN = 100.0  # mm shown at least, so one or two points do not fill the view
+    POINT_RADIUS = 5
+    CLICK_RADIUS = 12
+
+    def __init__(self):
+        super().__init__()
+        self.corners = []
+        self.sheet = None
+        self.selected = -1
+        self.setMinimumSize(320, 320)
+
+    def sizeHint(self):
+        return QSize(460, 460)
+
+    def set_data(self, corners, sheet, selected):
+        self.corners, self.sheet, self.selected = list(corners), sheet, selected
+        self.update()
+
+    def transform(self):
+        """Scale and offset from mm to pixels, Y up, same scale on both axes."""
+        xs = [c[0] for c in self.corners]
+        ys = [c[1] for c in self.corners]
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        span_x, span_y = max(x1 - x0, self.MIN_SPAN), max(y1 - y0, self.MIN_SPAN)
+        width, height = self.width() - 2 * self.PADDING, self.height() - 2 * self.PADDING
+        scale = min(width / span_x, height / span_y)
+        return scale, self.width() / 2 - cx * scale, self.height() / 2 + cy * scale
+
+    def to_pixels(self, point, transform):
+        scale, ox, oy = transform
+        return QPointF(ox + point[0] * scale, oy - point[1] * scale)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor("white"))
+        painter.setPen(QPen(COLOR_GRID))
+        painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
+        if not self.corners:
+            painter.setPen(QPen(COLOR_VIEW))
+            painter.drawText(self.rect(), Qt.AlignCenter | Qt.TextWordWrap,
+                             "Inga punkter än.\nSpara första hörnet i QtPlasmaC.")
+            return
+        transform = self.transform()
+        pixels = [self.to_pixels(c, transform) for c in self.corners]
+
+        origin = self.to_pixels((0.0, 0.0), transform)
+        if self.rect().contains(origin.toPoint()):
+            painter.setPen(QPen(COLOR_ORIGIN, 1.5))
+            painter.drawLine(origin + QPointF(-8, 0), origin + QPointF(8, 0))
+            painter.drawLine(origin + QPointF(0, -8), origin + QPointF(0, 8))
+            painter.drawText(origin + QPointF(5, 14), "X0 Y0")
+
+        if self.sheet is not None:
+            polygon = QPolygonF([self.to_pixels(c, transform) for c in self.sheet.corners])
+            painter.setPen(QPen(COLOR_SELECTED, 1.5, Qt.DashLine))
+            painter.setBrush(QBrush(QColor(COLOR_SELECTED.red(), COLOR_SELECTED.green(), COLOR_SELECTED.blue(), 40)))
+            painter.drawPolygon(polygon)
+            painter.setBrush(Qt.NoBrush)
+
+        edge = COLOR_SHEET_EDGE if self.sheet is not None or len(pixels) < 3 else COLOR_OUTSIDE
+        painter.setPen(QPen(edge, 2))
+        for a, b in zip(pixels, pixels[1:]):
+            painter.drawLine(a, b)
+        if len(pixels) >= 3:
+            painter.setPen(QPen(edge, 1.5, Qt.DashLine))
+            painter.drawLine(pixels[-1], pixels[0])
+
+        for number, point in enumerate(pixels):
+            newest = number == len(pixels) - 1
+            color = COLOR_DRAFT if newest else COLOR_CUT
+            radius = self.POINT_RADIUS + (2 if newest else 0)
+            if number == self.selected:
+                painter.setPen(QPen(COLOR_SELECTED, 3))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawEllipse(point, radius + 5, radius + 5)
+            painter.setPen(QPen(color, 1))
+            painter.setBrush(QBrush(color))
+            painter.drawEllipse(point, radius, radius)
+            painter.setPen(QPen(color))
+            label = point + QPointF(radius + 3, -radius - 3)
+            painter.drawText(label, str(number + 1))
+
+    def mousePressEvent(self, event):
+        if not self.corners:
+            return
+        transform = self.transform()
+        pos = QPointF(event.pos())
+        distances = [(math.hypot(p.x() - pos.x(), p.y() - pos.y()), i)
+                     for i, p in enumerate(self.to_pixels(c, transform) for c in self.corners)]
+        distance, index = min(distances)
+        if distance <= self.CLICK_RADIUS:
+            self.pointClicked.emit(index)
+
+
 class MachineDialog(QDialog):
     """Sheet corners saved from QtPlasmaC with the Spara punkt button, live as they arrive."""
 
@@ -633,6 +734,7 @@ class MachineDialog(QDialog):
         intro.setWordWrap(True)
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["X (mm)", "Y (mm)", "Sikte", "Sparad"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -660,15 +762,28 @@ class MachineDialog(QDialog):
         self.buttons.button(QDialogButtonBox.Ok).setText("Använd som plåt")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
+        self.preview = PointsPreview()
+        self.preview.pointClicked.connect(lambda index: self.table.setCurrentCell(index, 0))
+        self.table.currentCellChanged.connect(lambda *args: self.update_preview())
+        legend = QLabel(f"<span style='color:{COLOR_DRAFT.name()}'>●</span> senaste punkten &nbsp; "
+                        f"<span style='color:{COLOR_SELECTED.name()}'>▨</span> plåt efter marginalen")
+        controls = QVBoxLayout()
+        controls.addWidget(intro)
+        controls.addWidget(self.table)
+        controls.addLayout(row)
+        controls.addWidget(self.coordinates)
+        controls.addLayout(margin_row)
+        controls.addWidget(self.result)
+        drawing = QVBoxLayout()
+        drawing.addWidget(self.preview, 1)
+        drawing.addWidget(legend)
+        columns = QHBoxLayout()
+        columns.addLayout(controls, 0)
+        columns.addLayout(drawing, 1)
         layout = QVBoxLayout(self)
-        layout.addWidget(intro)
-        layout.addWidget(self.table)
-        layout.addLayout(row)
-        layout.addWidget(self.coordinates)
-        layout.addLayout(margin_row)
-        layout.addWidget(self.result)
+        layout.addLayout(columns, 1)
         layout.addWidget(self.buttons)
-        self.resize(460, 520)
+        self.resize(960, 560)
 
         self.timer = QTimer(self)
         self.timer.setInterval(self.POLL_MS)
@@ -742,6 +857,10 @@ class MachineDialog(QDialog):
             self.result.setText(f"Plåt med {len(s.corners)} hörn, {s.width:.1f} × {s.height:.1f} mm, "
                                 f"{s.area / 1e6:.2f} m² efter marginalen.")
         self.buttons.button(QDialogButtonBox.Ok).setEnabled(self.sheet is not None)
+        self.update_preview()
+
+    def update_preview(self):
+        self.preview.set_data(self.corners() if not self.error else [], self.sheet, self.table.currentRow())
 
     def rewrite(self, points):
         try:

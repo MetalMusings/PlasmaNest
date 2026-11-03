@@ -35,7 +35,7 @@ Testa gärna med filerna i `samples/`.
 | Rektangulär plåt | Bredd och höjd i panelen. Plåtens nedre vänstra hörn är G-kodens X0 Y0. |
 | Rita plåten | **Rita**, och klicka ut hörnen med musen. Avsluta med dubbelklick, Enter eller klick på första hörnet. Backsteg tar bort senaste hörnet, Esc avbryter och Shift ger raka kanter. Hörnen hamnar på hela millimeter. |
 | Skriva plåtens hörn | **Hörn…** visar hörnen i en tabell, där du kan ändra, lägga till och ta bort dem. Använd den för exakta mått. |
-| Plåt från maskinen | Jogga till plåtens hörn och tryck på användarknappen **Spara punkt** i QtPlasmaC vid varje hörn. Öppna **Från maskinen…** i PlasmaNest, där punkterna dyker upp efter hand. Välj säkerhetsmarginal och tryck **Använd som plåt**. Se nedan hur knappen läggs in. |
+| Plåt från maskinen | Jogga till plåtens hörn och tryck på användarknappen **Spara punkt** i QtPlasmaC vid varje hörn. Öppna **Från maskinen…** i PlasmaNest, där punkterna dyker upp efter hand i en tabell och en ritning. I ritningen syns kanterna, den senaste punkten och plåten efter marginalen. Välj säkerhetsmarginal och tryck **Använd som plåt**. Se nedan hur knappen läggs in. |
 | Tillbaka till rektangel | **Rektangel** ger en rektangel med polygonens yttermått, med hörnet i X0 Y0. |
 | Flytta | Dra med vänster musknapp, skriv X/Y i panelen, eller använd piltangenterna (1 mm, med Shift 10 mm). |
 | Rotera | Håll höger musknapp på figuren och dra runt den, så följer figuren muspekaren (Ctrl ger steg om 15°). Det går också med den gröna ringen, Shift+mushjul, tangenten R, knapparna i panelen, eller genom att skriva vinkeln. |
