@@ -1604,6 +1604,8 @@ class MainWindow(QMainWindow):
         self.live_dir = directory
         self.live_state = None
         self.autoload.show()
+        if conversational_disabled():
+            self.conversational_button.hide()
         self.write_live_export()
 
     def live_problems(self):
@@ -1779,6 +1781,17 @@ class MainWindow(QMainWindow):
             event.ignore()
 
 
+def conversational_disabled(run=None):
+    """True if QtPlasmaC's CONVERSATIONAL tab is switched off with qtplasmac.conv_disable."""
+    import subprocess
+    run = run or subprocess.run
+    try:
+        result = run(["halcmd", "getp", "qtplasmac.conv_disable"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and result.stdout.strip().upper() == "TRUE"
+
+
 def announce_window(window, stream=None):
     """Embedded mode: tell the host our X11 window id on the first line, then go quiet.
 
@@ -1851,6 +1864,46 @@ class PopupPlacer(QObject):
         return False
 
 
+def x11_has_host(window):
+    """True when the window has been moved into another window, False when it is still a
+    top-level window, None when X11 cannot be asked."""
+    try:
+        from Xlib import display
+    except ImportError:
+        return None
+    try:
+        connection = display.Display()
+        try:
+            ours = connection.create_resource_object("window", int(window.winId()))
+            return ours.query_tree().parent.id != connection.screen().root.id
+        finally:
+            connection.close()
+    except Exception:
+        return None
+
+
+def show_when_embedded(window, has_host=x11_has_host, poll_ms=50, timeout_ms=10000):
+    """Show the window only once the host has taken it in.
+
+    Shown earlier, as a top-level window, the window manager may frame it before the host's
+    container takes it, and PlasmaNest ends up in a window of its own. Inside another window
+    the window manager leaves it alone. If no host takes it in time, show it on its own anyway.
+    """
+    waited = [0]
+    timer = QTimer(window)
+
+    def check():
+        waited[0] += poll_ms
+        host = has_host(window)
+        if host or host is None or waited[0] >= timeout_ms:
+            timer.stop()
+            window.show()
+    timer.timeout.connect(check)
+    timer.start(poll_ms)
+    window._host_timer = timer
+    return timer
+
+
 def stop_with_host(app, window, stdin_fd=0):
     """Quit without dialogs when the host ends: on SIGTERM, as QtVCP's _hal_cleanup sends, or when
     the host's pipe on stdin closes because it died. Unsaved work is saved first."""
@@ -1889,8 +1942,10 @@ def main(argv=None):
         window.enable_live_export(live.live_dir())
         app._popup_placer = PopupPlacer(window)
         app.installEventFilter(app._popup_placer)
-    # Also when embedded: a hidden widget is never painted, even inside the host's container.
-    window.show()
+        # Shown once inside the host: a hidden widget is never painted, even in the host's container.
+        show_when_embedded(window)
+    else:
+        window.show()
     projects = [p for p in paths if p.lower().endswith(".pnest")]
     if projects:
         window.open_project_path(projects[0])

@@ -28,8 +28,34 @@ START_TIMEOUT_MS = 15000
 WATCH_MS = 1000
 
 
+LOG_FILE = os.path.join(os.path.expanduser("~"), ".plasmanest", "qtplasmac-tab.log")
+
+
 def log(text):
-    print(f"PlasmaNest-fliken: {text}", file=sys.stderr, flush=True)
+    """QtPlasmaC's stderr is not kept anywhere, so also write to a file of our own."""
+    line = f"PlasmaNest-fliken: {text}"
+    print(line, file=sys.stderr, flush=True)
+    try:
+        import time
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}\n")
+    except OSError:
+        pass
+
+
+def guarded(function):
+    """For everything run by a Qt signal inside QtPlasmaC: an exception that leaves a slot makes
+    QtVCP show an error dialog, and plain PyQt aborts the whole program. Log it instead."""
+    def wrapper(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except Exception:
+            log(traceback.format_exc())
+            return None
+    wrapper.__name__ = function.__name__
+    wrapper.__doc__ = function.__doc__
+    return wrapper
 
 
 class PlasmaNestTab(QWidget):
@@ -74,6 +100,7 @@ class PlasmaNestTab(QWidget):
     def make_container(self, window_id):
         return QWidget.createWindowContainer(QWindow.fromWinId(window_id), self)
 
+    @guarded
     def start(self):
         if self.process is not None:
             return
@@ -88,6 +115,7 @@ class PlasmaNestTab(QWidget):
         except Exception as error:
             self.fail(f"Kunde inte starta PlasmaNest: {error}")
 
+    @guarded
     def read_window_id(self):
         try:
             data = os.read(self.process.stdout.fileno(), 64)
@@ -110,11 +138,13 @@ class PlasmaNestTab(QWidget):
         except Exception as error:
             self.fail(f"Kunde inte visa PlasmaNest: {error}")
 
+    @guarded
     def watch(self):
         if self.process is not None and self.process.poll() is not None:
             self.cleanup()
             self.show_message("PlasmaNest har avslutats.", restart=True)
 
+    @guarded
     def fail(self, text):
         log(text)
         self.stop()
@@ -138,6 +168,7 @@ class PlasmaNestTab(QWidget):
                     pass
         self.process = None
 
+    @guarded
     def stop(self):
         process = self.process
         if process is not None and process.poll() is None:
@@ -206,33 +237,86 @@ class NestLoader:
 def install(handler):
     """Add the tab to QtPlasmaC's main tab widget, last, and keep it there."""
     try:
-        tabs = handler.w.main_tab_widget
+        tabs = getattr(handler.w, "main_tab_widget", None)
+        if tabs is None:
+            # Other QtVCP programs read the same INI file, for example the simulator's panel.
+            log(f"ingen flikrad i {type(handler).__name__}, hoppar över")
+            return None
         tab = PlasmaNestTab()
 
+        @guarded
         def ensure_tab():
-            # QtPlasmaC's disable_tabs removes every tab but MAIN and only puts its own back.
-            try:
-                if tabs.indexOf(tab) < 0:
-                    tabs.addTab(tab, TAB_TITLE)
-            except Exception:
-                log(traceback.format_exc())
+            """Put the tab where it belongs. QtPlasmaC's disable_tabs removes every tab but MAIN and
+            only puts its own back.
+
+            With CONVERSATIONAL hidden the tab takes its place, index 1, which QtPlasmaC keeps
+            disabled while paused; from index 2 tabs are enabled then. With CONVERSATIONAL shown,
+            QtPlasmaC expects it at index 1, so the tab goes last.
+            """
+            conversational = getattr(handler, "widgetConversational", None)
+            conversational_shown = conversational is None or tabs.indexOf(conversational) >= 0
+            current = tabs.indexOf(tab)
+            wanted = (tabs.count() - (1 if current >= 0 else 0)) if conversational_shown else 1
+            if current == wanted:
+                return
+            if current >= 0:
+                tabs.removeTab(current)
+            tabs.insertTab(wanted, tab, TAB_TITLE)
+            # QtPlasmaC keeps tab indexes, as its own disable_tabs does; moving tabs makes them stale.
+            for index_name, widget_name in (("CONVERSATIONAL", "widgetConversational"),
+                                            ("PARAMETERS", "widgetParameters"),
+                                            ("SETTINGS", "widgetSettings"),
+                                            ("STATISTICS", "widgetStatistics")):
+                widget = getattr(handler, widget_name, None)
+                if widget is not None and hasattr(handler, index_name):
+                    setattr(handler, index_name, tabs.indexOf(widget))
 
         ensure_tab()
         original = handler.disable_tabs
 
         def disable_tabs(*args, **kwargs):
-            original(*args, **kwargs)
+            # HAL pins call this with their value; QtPlasmaC's disable_tabs takes no arguments.
+            # QtPlasmaC's own errors are left to QtPlasmaC, as without PlasmaNest.
+            original()
             ensure_tab()
         handler.disable_tabs = disable_tabs
         # The HAL pins were connected to the original method before this file ran.
+        def titles():
+            return " ".join(tabs.tabText(i) for i in range(tabs.count()))
+
+        tab_pins = (("convTabDisable", "widgetConversational"), ("paramTabDisable", "widgetParameters"),
+                    ("settingsTabDisable", "widgetSettings"))
+
+        @guarded
+        def reconcile():
+            # QtPlasmaC 2.9.4 connects these pins to disable_tabs only in startup_timeout, after their
+            # first value has been read, so a value set in the postgui HAL file is never acted on.
+            for pin_name, widget_name in tab_pins:
+                pin, widget = getattr(handler, pin_name, None), getattr(handler, widget_name, None)
+                if pin is None or widget is None:
+                    continue
+                if (tabs.indexOf(widget) >= 0) == bool(pin.get()):
+                    log(f"flikarna stämmer inte med {pin_name}, bygger om dem")
+                    handler.disable_tabs()
+                    return
+
+        @guarded
+        def pin_changed(name, value):
+            ensure_tab()
+            # After QtPlasmaC's own slot, if it is connected yet.
+            QTimer.singleShot(0, reconcile)
+            log(f"{name} = {value}, flikar: {titles()}")
+
         for name in ("convTabDisable", "paramTabDisable", "settingsTabDisable"):
             pin = getattr(handler, name, None)
             if pin is not None:
-                pin.value_changed.connect(lambda value: ensure_tab())
+                pin.value_changed.connect(lambda value, name=name: pin_changed(name, value))
+        log(f"installerad, flikar: {titles()}")
 
         loader = NestLoader(handler)
         previous = [tabs.currentWidget()]
 
+        @guarded
         def tab_changed(index):
             try:
                 widget = tabs.widget(index)

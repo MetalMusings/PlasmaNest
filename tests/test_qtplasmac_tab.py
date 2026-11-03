@@ -21,8 +21,26 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def tab_log(tmp_path, monkeypatch):
+    path = tmp_path / "qtplasmac-tab.log"
+    monkeypatch.setattr(plasmanest_tab, "LOG_FILE", str(path))
+    return path
+
+
 class FakePin(QObject):
     value_changed = pyqtSignal(bool)
+
+    def __init__(self):
+        super().__init__()
+        self.value = False
+
+    def get(self):
+        return self.value
+
+    def set(self, value):
+        self.value = value
+        self.value_changed.emit(value)
 
 
 class FakeHandler:
@@ -37,17 +55,40 @@ class FakeHandler:
                                                       "STATISTICS")}
         for name, page in self.pages.items():
             self.w.main_tab_widget.addTab(page, name)
+        self.widgetConversational = self.pages["CONVERSATIONAL"]
+        self.widgetParameters = self.pages["PARAMETERS"]
+        self.widgetSettings = self.pages["SETTINGS"]
+        self.widgetStatistics = self.pages["STATISTICS"]
+        self.MAIN, self.CONVERSATIONAL, self.PARAMETERS, self.SETTINGS, self.STATISTICS = 0, 1, 2, 3, 4
         self.convTabDisable, self.paramTabDisable, self.settingsTabDisable = FakePin(), FakePin(), FakePin()
-        # QtPlasmaC connects the pins to its bound method before the user command file runs.
+
+    def startup_timeout(self):
+        # As in QtPlasmaC 2.9.4: the pins are connected late, after the user command file has run.
         for pin in (self.convTabDisable, self.paramTabDisable, self.settingsTabDisable):
             pin.value_changed.connect(self.disable_tabs)
 
-    def disable_tabs(self, *args):
+    def disable_tabs(self):  # as in QtPlasmaC 2.9.4: no arguments
         tabs = self.w.main_tab_widget
         while tabs.count() > 1:
             tabs.removeTab(1)
-        for index, name in enumerate(("CONVERSATIONAL", "PARAMETERS", "SETTINGS", "STATISTICS"), 1):
+        names = ["STATISTICS"]
+        for pin, name in ((self.settingsTabDisable, "SETTINGS"), (self.paramTabDisable, "PARAMETERS"),
+                          (self.convTabDisable, "CONVERSATIONAL")):
+            if not pin.get():
+                names.insert(0, name)
+        for index, name in enumerate(names, 1):
             tabs.insertTab(index, self.pages[name], name)
+        self.CONVERSATIONAL = tabs.indexOf(self.widgetConversational)
+        self.PARAMETERS = tabs.indexOf(self.widgetParameters)
+        self.SETTINGS = tabs.indexOf(self.widgetSettings)
+        self.STATISTICS = tabs.indexOf(self.widgetStatistics)
+
+    def set_tab_jog_states_paused(self, state):
+        # QtPlasmaC 2.9.4's set_tab_jog_states while paused.
+        tabs = self.w.main_tab_widget
+        for n in range(tabs.count()):
+            if n > 1:
+                tabs.setTabEnabled(n, state)
 
 
 def titles(handler):
@@ -76,10 +117,11 @@ def test_user_command_file_installs_the_tab_last(app):
 def test_tab_comes_back_after_qtplasmac_rebuilds_its_tabs(app):
     handler = FakeHandler()
     plasmanest_tab.install(handler)
-    handler.convTabDisable.value_changed.emit(True)  # via QtPlasmaC's own connection
-    assert titles(handler)[-1] == "PLASMANEST"
+    handler.startup_timeout()
+    handler.convTabDisable.set(True)  # via QtPlasmaC's own connection
+    assert titles(handler)[1] == "PLASMANEST"
     handler.disable_tabs()  # a direct call
-    assert titles(handler).count("PLASMANEST") == 1 and titles(handler)[-1] == "PLASMANEST"
+    assert titles(handler).count("PLASMANEST") == 1 and titles(handler)[1] == "PLASMANEST"
 
 
 def test_program_starts_only_when_the_tab_is_chosen(app):
@@ -131,3 +173,79 @@ def test_plasmanest_fills_the_whole_tab(app):
     tab.stop()
     assert not tab.message_page.isHidden()
     tab.close()
+
+
+def test_pin_connected_to_the_wrapped_method_hides_conversational(app):
+    # In the real QtPlasmaC the pin ends up calling our wrapper with its value as an argument.
+    handler = FakeHandler()
+    plasmanest_tab.install(handler)
+    handler.convTabDisable.value_changed.connect(handler.disable_tabs)
+    handler.convTabDisable.set(True)
+    QApplication.processEvents()
+    assert titles(handler) == ["MAIN", "PLASMANEST", "PARAMETERS", "SETTINGS", "STATISTICS"]
+    handler.convTabDisable.set(False)
+    QApplication.processEvents()
+    assert titles(handler) == ["MAIN", "CONVERSATIONAL", "PARAMETERS", "SETTINGS", "STATISTICS", "PLASMANEST"]
+
+
+def test_errors_in_slots_never_leave_the_glue(app, capsys):
+    tab = plasmanest_tab.PlasmaNestTab([sys.executable, "-c", "pass"])
+    tab.process = object()  # nonsense state: every slot must still return quietly
+    tab.watch()
+    tab.read_window_id()
+    tab.stop()
+    assert "Traceback" in capsys.readouterr().err
+
+
+def test_pin_changes_are_logged(app, tab_log):
+    handler = FakeHandler()
+    plasmanest_tab.install(handler)
+    handler.convTabDisable.set(True)
+    text = tab_log.read_text()
+    assert "installerad" in text and "convTabDisable = True" in text and "PLASMANEST" in text
+
+
+def test_value_set_before_qtplasmac_listens_is_still_applied(app):
+    # QtPlasmaC 2.9.4 misses a value set in the postgui HAL file; the glue builds the tabs anyway.
+    handler = FakeHandler()
+    plasmanest_tab.install(handler)
+    handler.convTabDisable.set(True)  # nobody from QtPlasmaC is listening yet
+    QApplication.processEvents()
+    assert titles(handler) == ["MAIN", "PLASMANEST", "PARAMETERS", "SETTINGS", "STATISTICS"]
+    handler.startup_timeout()
+    handler.paramTabDisable.set(True)
+    QApplication.processEvents()
+    assert titles(handler) == ["MAIN", "PLASMANEST", "SETTINGS", "STATISTICS"]
+
+
+def test_other_qtvcp_programs_are_skipped(app, tab_log):
+    class Panel:
+        class w:
+            pass
+    assert plasmanest_tab.install(Panel()) is None
+    assert "hoppar över" in tab_log.read_text() and "Traceback" not in tab_log.read_text()
+
+
+def test_tab_takes_conversationals_place_and_keeps_qtplasmacs_indexes_right(app):
+    handler = FakeHandler()
+    plasmanest_tab.install(handler)
+    tabs = handler.w.main_tab_widget
+    assert titles(handler)[-1] == "PLASMANEST" and handler.PARAMETERS == 2
+    handler.startup_timeout()
+    handler.convTabDisable.set(True)
+    QApplication.processEvents()
+    assert titles(handler) == ["MAIN", "PLASMANEST", "PARAMETERS", "SETTINGS", "STATISTICS"]
+    assert handler.CONVERSATIONAL == -1
+    assert tabs.tabText(handler.PARAMETERS) == "PARAMETERS"
+    assert tabs.tabText(handler.SETTINGS) == "SETTINGS"
+    assert tabs.tabText(handler.STATISTICS) == "STATISTICS"
+    # While paused QtPlasmaC enables tabs from index 2: PARAMETERS again, not PLASMANEST.
+    for n in range(1, tabs.count()):
+        tabs.setTabEnabled(n, False)
+    handler.set_tab_jog_states_paused(True)
+    assert not tabs.isTabEnabled(1) and tabs.isTabEnabled(handler.PARAMETERS)
+    # Showing CONVERSATIONAL again puts the tab last.
+    handler.convTabDisable.set(False)
+    QApplication.processEvents()
+    assert titles(handler) == ["MAIN", "CONVERSATIONAL", "PARAMETERS", "SETTINGS", "STATISTICS", "PLASMANEST"]
+    assert handler.PARAMETERS == 2 and handler.CONVERSATIONAL == 1

@@ -16,6 +16,12 @@ from plasmanest import live
 FLANS = os.path.join(ROOT, "samples", "flans.ngc")
 
 
+@pytest.fixture(autouse=True)
+def tab_log(tmp_path, monkeypatch):
+    import plasmanest_tab
+    monkeypatch.setattr(plasmanest_tab, "LOG_FILE", str(tmp_path / "qtplasmac-tab.log"))
+
+
 def test_write_then_read(tmp_path):
     status = live.write(str(tmp_path), "G0 X1 Y1\nM2\n", 1, [], True)
     assert live.read(str(tmp_path)) == status

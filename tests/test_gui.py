@@ -805,3 +805,52 @@ def test_conversational_without_shapes_or_with_the_main_file_is_explained(window
     assert [kind for kind, text in messages] == ["information", "critical", "information"]
     assert "tom" in messages[1][1] and "MAIN" in messages[2][1]
     assert window.parts == []
+
+
+def test_conversational_button_follows_qtplasmac(monkeypatch):
+    from types import SimpleNamespace
+    from plasmanest import gui
+    answer = lambda out, code=0: (lambda *a, **k: SimpleNamespace(returncode=code, stdout=out))
+    assert gui.conversational_disabled(answer("TRUE\n"))
+    assert not gui.conversational_disabled(answer("FALSE\n"))
+    assert not gui.conversational_disabled(answer("", 1))
+
+    def missing(*a, **k):
+        raise FileNotFoundError("halcmd")
+    assert not gui.conversational_disabled(missing)
+
+
+def test_embedded_window_hides_the_button_when_conversational_is_off(window, tmp_path, monkeypatch):
+    from plasmanest import gui
+    monkeypatch.setattr(gui, "conversational_disabled", lambda: True)
+    window.conversational_button.show()
+    window.enable_live_export(str(tmp_path))
+    assert window.conversational_button.isHidden()
+
+
+def test_embedded_window_waits_for_the_host_before_showing(window):
+    from plasmanest import gui
+    window.hide()
+    answers = iter([False, False, True])
+    gui.show_when_embedded(window, lambda w: next(answers), poll_ms=10)
+    QTest.qWait(15)
+    assert not window.isVisible()
+    assert wait_until(window.isVisible)
+
+
+def test_embedded_window_shows_anyway_without_a_host(window):
+    from plasmanest import gui
+    window.hide()
+    gui.show_when_embedded(window, lambda w: False, poll_ms=10, timeout_ms=50)
+    assert wait_until(window.isVisible)
+    window.hide()
+    gui.show_when_embedded(window, lambda w: None, poll_ms=10)  # X11 cannot be asked
+    assert wait_until(window.isVisible)
+
+
+def wait_until(condition, ms=2000):
+    for _ in range(ms // 10):
+        if condition():
+            return True
+        QTest.qWait(10)
+    return condition()
