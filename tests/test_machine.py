@@ -270,3 +270,22 @@ def test_preview_follows_the_points_and_selects_rows(app, tmp_path):
     assert dialog.sheet is None and len(preview.corners) == 5
     preview.grab()  # paints without errors
     dialog.close()
+
+
+# ------------------------------------------------------------------ pendant button
+
+def test_button_saves_once_per_press():
+    import point_button
+    states = iter([True, True, False, True, True, True, False, False, True, False])
+    saved = []
+    watcher = point_button.ButtonWatcher(lambda: next(states), lambda: saved.append(1))
+    presses = [watcher.step() for _ in range(10)]
+    # Held at start-up does not count; then two presses.
+    assert presses == [False, False, False, True, False, False, False, False, True, False]
+    assert len(saved) == 2
+
+
+def test_button_needs_a_pin_name(capsys):
+    import point_button
+    assert point_button.main(["point_button.py"]) == 2
+    assert "input.0.btn-start" in capsys.readouterr().err

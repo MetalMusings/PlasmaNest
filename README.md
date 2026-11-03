@@ -75,6 +75,19 @@ Tryck **Save**, så dyker knappen upp på MAIN-fliken. Ändra sökvägen om Plas
 - Ta hörnen i ordning runt plåten. **Rensa alla** innan en ny plåt mäts upp.
 - Säkerhetsmarginalen flyttar varje kant inåt. Blir formen ogiltig av marginalen vägras plåten.
 
+### Spara punkt från handkontrollen
+
+En knapp på handkontrollen kan spara punkten på samma sätt. Lägg till en rad sist i
+postgui-HAL-filen (här `custom_postgui.hal`) och starta om LinuxCNC:
+
+```
+loadusr python3 /home/debian/src/plasmanest/point_button.py input.0.btn-start
+```
+
+Sista ordet är knappens HAL-pinne. `input.0.btn-start` är START på en Logitech F310 via
+`hal_input`. Skriptet läser bara pinnen och kopplar inte om något. Det laddas utan `-W`, så LinuxCNC
+startar även om skriptet saknas. Fel visas i QtPlasmaC.
+
 ## Öppna exporten i QtPlasmaC med en knapp
 
 På en Linux-dator med `~/linuxcnc/nc_files` föreslår **Exportera** katalogen
