@@ -121,10 +121,23 @@ USER_COMMAND_FILE = /home/debian/src/plasmanest/qtplasmac/user_command.py
 
 ## Rektanglar som ritas i PlasmaNest
 
-- De skärs medurs från det första hörnet, utan inledning.
-- Banan följer de ritade måtten och kompenseras inte för skärspalten. Delen blir alltså en halv
-  skärspalt mindre runt om.
-- De har inget eget material, utan skärs med materialet som är aktivt i QtPlasmaC.
+När en rektangel är markerad visar panelen rutan **Rektangel**:
+
+| Fält | Betydelse |
+|---|---|
+| Bredd, Höjd | De ritade måtten. |
+| Material | Ur QtPlasmaC:s materialfil. Väljs med `M190` i G-koden, och skärspalten hämtas från materialet. "Aktivt i QtPlasmaC" väljer inget material. |
+| Skär | **Utsida (delen):** banan går en halv skärspalt utanför de ritade måtten, medurs. **Insida (hål):** en halv skärspalt innanför, moturs. |
+| Skärspalt | Hämtas från materialet. Skrivs för hand när inget material är valt. |
+| Inledning | Längd i mm, 0 eller mer. En rak linje vinkelrätt mot kanten, med början i spillet. |
+| Placera inledning | Peka på eller nära rektangeln och klicka där inledningen ska vara. |
+
+- För en rektangel gäller fälten **X (ritat hörn)** och **Y (ritat hörn)** det ritade hörnet, inte
+  banans yttermått.
+- En ny rektangel får samma inställningar som den senast ändrade.
+- Inställningarna sparas i rektangelns G-kod och finns kvar i projektfiler.
+- En omöjlig inställning vägras med ett rött meddelande, till exempel en inledning som inte får
+  plats i hålet.
 
 ## Två sorters filer
 

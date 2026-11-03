@@ -955,7 +955,7 @@ def test_resized_rectangle_keeps_its_corner_and_cutting_order(window):
     rect = window.parts[0]
     corner = rect.placement.map_point((100, 50))
     window.size_h.setValue(200)
-    window.size_edited()
+    window.rectangle_edited()
     rect = window.parts[0]
     assert rect.placement.program.name == "Rektangel 240 × 200"
     assert rect.placement.angle == pytest.approx(30)
@@ -967,3 +967,85 @@ def test_size_fields_only_for_rectangles(window):
     window.load_paths([FLANS])
     window.parts[0].setSelected(True)
     assert not window.size_w.isVisibleTo(window)
+
+
+def test_rectangle_settings_from_the_panel(window, monkeypatch):
+    from plasmanest.materials import Material
+    from plasmanest.shapes import rectangle_of
+    from plasmanest import gui
+    monkeypatch.setattr(gui, "available_materials", lambda: [Material(1, "1 mm plåt", 1.2), Material(5, "5 mm", 1.6)])
+    win = gui.MainWindow()
+    try:
+        part = win.add_shape(win.new_rectangle(100, 50, 340, 130).program())
+        assert win.rect_box.isVisibleTo(win) and win.rect_kerf.isEnabled()
+        win.rect_material.setCurrentIndex(win.rect_material.findData(5))
+        r = rectangle_of(win.parts[0].placement.program)
+        assert r.material == 5 and r.kerf == 1.6 and not win.rect_kerf.isEnabled()
+        win.rect_side.setCurrentIndex(1)
+        win.rect_leadin.setValue(6)
+        win.rectangle_edited()
+        r = rectangle_of(win.parts[0].placement.program)
+        assert r.inside and r.leadin == 6 and win.parts[0].placement.program.name == "Hål 240 × 80"
+        # A new rectangle starts with the settings used last.
+        assert win.new_rectangle(0, 0, 10, 10).material == 5 and win.new_rectangle(0, 0, 10, 10).inside
+        # An impossible setting is refused with a message and the rectangle stays as it was.
+        win.rect_leadin.setValue(500)
+        win.rectangle_edited()
+        assert rectangle_of(win.parts[0].placement.program).leadin == 6
+        assert "får inte plats" in win.rect_error.text() and win.rect_leadin.value() == 6
+    finally:
+        win.saved_state = win.undo_stack[win.undo_index]
+        win.close()
+
+
+def test_leadin_is_placed_by_pointing_near_the_rectangle(window):
+    from plasmanest.shapes import Rectangle, rectangle_of
+    zoom_in(window, 220, 90)
+    window.add_shape(Rectangle(100, 50, 240, 80, leadin=4).program())
+    window.place_leadin()
+    assert window.view.shape_mode == "leadin"
+    mouse(window, QEvent.MouseMove, (220, 200), buttons=Qt.NoButton, button=Qt.NoButton)  # too far away
+    assert window.view.leadin_choice is None and "närmare" in window.view.label.text
+    mouse(window, QEvent.MouseMove, (280, 133), buttons=Qt.NoButton, button=Qt.NoButton)
+    assert window.view.leadin_choice == (1, 0.75) and "övre" in window.view.label.text
+    assert not window.view.draft.path().isEmpty()
+    mouse(window, QEvent.MouseButtonPress, (280, 133))
+    r = rectangle_of(window.parts[0].placement.program)
+    assert (r.edge, r.at) == (1, 0.75) and window.view.shape_mode is None
+    cut, = [p for p in window.parts[0].placement.program.paths if p.kind == "cut"]
+    assert cut.points[0] == pytest.approx((280, 134)) and cut.points[1] == pytest.approx((280, 130))
+
+
+def test_leadin_on_a_rotated_rectangle(window):
+    from plasmanest.shapes import Rectangle, rectangle_of
+    zoom_in(window, 220, 90)
+    part = window.add_shape(Rectangle(100, 50, 240, 80, leadin=4).program())
+    window.rotate_selection(90)
+    part = window.parts[0]
+    # The right edge (x=340 before rotating) now points down; its middle is easy to find.
+    target = part.placement.map_point((340, 90))
+    zoom_in(window, *target)
+    window.place_leadin()
+    mouse(window, QEvent.MouseMove, (target[0] + 1, target[1] - 1), buttons=Qt.NoButton, button=Qt.NoButton)
+    mouse(window, QEvent.MouseButtonPress, (target[0] + 1, target[1] - 1))
+    r = rectangle_of(window.parts[0].placement.program)
+    assert r.edge == 2 and r.at == pytest.approx(0.5, abs=0.02)
+
+
+def test_position_fields_of_a_rectangle_give_its_drawn_corner(window):
+    from plasmanest.shapes import Rectangle
+    window.add_shape(Rectangle(363, 366, 20, 20, kerf=1.2, material=None, leadin=5, edge=1, at=0.03).program())
+    assert window.pos_x_label.text() == "X (ritat hörn):"
+    assert (window.pos_x.value(), window.pos_y.value()) == pytest.approx((363, 366))
+    window.pos_x.setValue(30)
+    window.pos_y.setValue(30)
+    placement = window.parts[0].placement
+    cut, = [p for p in placement.program.paths if p.kind == "cut"]
+    points = [placement.map_point(q) for q in cut.points[1:]]
+    assert min(x for x, _ in points) == pytest.approx(29.4) and max(x for x, _ in points) == pytest.approx(50.6)
+    assert min(y for _, y in points) == pytest.approx(29.4) and max(y for _, y in points) == pytest.approx(50.6)
+    # Other figures keep the bounds of the cut path.
+    window.load_paths([FLANS])
+    window.scene_.clearSelection()
+    window.parts[1].setSelected(True)
+    assert window.pos_x_label.text() == "X (vänster kant):"

@@ -444,8 +444,62 @@ def test_too_small_rectangle_is_refused():
 
 
 def test_rectangles_are_recognised_but_not_other_figures():
-    from plasmanest.shapes import rectangle_of, rectangle_program
-    assert rectangle_of(rectangle_program(100, 50, 340, 130)) == (100, 50, 240, 80)
+    from plasmanest.shapes import Rectangle, rectangle_of, rectangle_program
+    assert rectangle_of(rectangle_program(100, 50, 340, 130)) == Rectangle(100, 50, 240, 80)
     assert rectangle_of(load_program(os.path.join(SAMPLES, "flans.ngc"))) is None
     tampered = rectangle_program(0, 0, 10, 10).text.replace("G1 X10 Y10", "G1 X12 Y10")
     assert rectangle_of(Program("x", tampered)) is None
+
+
+def test_first_version_rectangles_are_still_recognised():
+    from plasmanest.shapes import Rectangle, rectangle_of
+    old = ";PlasmaNest rektangel 240 x 80 mm\nG21 G40 G90\nF#<_hal[plasmac.cut-feed-rate]>\nG0 X100 Y50\n" \
+          "M3 $0 S1\nG1 X100 Y130\nG1 X340 Y130\nG1 X340 Y50\nG1 X100 Y50\nM5 $0\nM2\n"
+    assert rectangle_of(Program("x", old)) == Rectangle(100, 50, 240, 80)
+
+
+def test_outside_cut_moves_out_half_the_kerf_clockwise_with_leadin_from_outside():
+    from plasmanest.shapes import Rectangle, rectangle_of
+    r = Rectangle(100, 50, 240, 80, kerf=1.2, material=3, leadin=4, edge=0, at=0.5)
+    program = r.program()
+    assert rectangle_of(program) == r
+    assert "M190 P3" in program.text and "M66 P3 L3 Q1" in program.text
+    cut, = [p for p in program.paths if p.kind == "cut"]
+    assert cut.points == pytest.approx([(95.4, 90), (99.4, 90), (99.4, 130.6), (340.6, 130.6), (340.6, 49.4),
+                                        (99.4, 49.4), (99.4, 90)])
+
+
+def test_inside_cut_moves_in_half_the_kerf_counter_clockwise_with_leadin_from_inside():
+    from plasmanest.shapes import Rectangle, rectangle_of
+    r = Rectangle(0, 0, 50, 30, inside=True, kerf=1.6, leadin=5, edge=3, at=0.5)
+    program = r.program()
+    assert rectangle_of(program) == r and program.name == "Hål 50 × 30"
+    cut, = [p for p in program.paths if p.kind == "cut"]
+    assert cut.points == pytest.approx([(25, 5.8), (25, 0.8), (49.2, 0.8), (49.2, 29.2), (0.8, 29.2),
+                                        (0.8, 0.8), (25, 0.8)])
+
+
+def test_impossible_rectangles_are_refused():
+    from plasmanest.shapes import Rectangle
+    with pytest.raises(ValueError, match="får inte plats"):
+        Rectangle(0, 0, 50, 30, inside=True, kerf=1.6, leadin=29, edge=3).gcode()
+    with pytest.raises(ValueError, match="för litet"):
+        Rectangle(0, 0, 50, 1.5, inside=True, kerf=1.6).gcode()
+    with pytest.raises(ValueError):
+        Rectangle(0, 0, 50, 30, leadin=-1).gcode()
+
+
+def test_nearest_edge_for_the_leadin():
+    from plasmanest.shapes import Rectangle
+    r = Rectangle(0, 0, 100, 50)
+    assert r.nearest_edge((-3, 25))[:2] == (0, 0.5)
+    assert r.nearest_edge((25, 52))[:2] == (1, 0.25)
+    assert r.nearest_edge((104, 10))[:2] == (2, 0.8)
+    edge, at, distance = r.nearest_edge((50, -7))
+    assert (edge, at) == (3, 0.5) and distance == pytest.approx(7)
+
+
+def test_placement_unmaps_what_it_maps():
+    program = load_program(os.path.join(SAMPLES, "flans.ngc"))
+    placement = Placement(program, 300, 200, 37)
+    assert placement.unmap_point(placement.map_point((12.5, -3))) == pytest.approx((12.5, -3))

@@ -32,6 +32,12 @@ class Placement:
         dx, dy = point[0] - self.program.center[0], point[1] - self.program.center[1]
         return (c * dx - s * dy + self.x, s * dx + c * dy + self.y)
 
+    def unmap_point(self, point):
+        """Program coordinates of a point on the sheet: the inverse of map_point."""
+        c, s = rotation(self.angle)
+        dx, dy = point[0] - self.x, point[1] - self.y
+        return (c * dx + s * dy + self.program.center[0], -s * dx + c * dy + self.program.center[1])
+
     def map_vector(self, vector):
         c, s = rotation(self.angle)
         return (c * vector[0] - s * vector[1], s * vector[0] + c * vector[1])

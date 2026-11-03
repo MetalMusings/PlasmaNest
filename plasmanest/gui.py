@@ -9,7 +9,7 @@ import time
 from PyQt5.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, QSize, QSocketNotifier, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import (QBrush, QColor, QFontMetrics, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPainterPathStroker,
                          QPen, QPolygonF, QTransform)
-from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox, QDialog,
+from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox, QComboBox, QDialog,
                              QDialogButtonBox, QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
                              QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsSimpleTextItem,
                              QGraphicsView, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget, QListWidgetItem,
@@ -19,7 +19,8 @@ from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox
 from . import live, machine
 from .gcode import GCodeError, Program, load_program
 from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
-from .shapes import rectangle_of, rectangle_program
+from .materials import available_materials
+from .shapes import EDGE_NAMES, Rectangle, rectangle_of
 
 APP_NAME = "PlasmaNest"
 PART_GAP = 10.0        # mm between figures placed automatically
@@ -350,7 +351,9 @@ class NestView(QGraphicsView):
         scene.addItem(self.draft)
         self.label = DraftLabel()
         scene.addItem(self.label)
-        self.shape_mode = None   # "rectangle" while a new figure is being drawn
+        self.shape_mode = None   # "rectangle" while a new figure is drawn, "leadin" while placing one
+        self.leadin_part = None
+        self.leadin_choice = None
         self.shape_start = None  # its first corner, in scene mm
         self.shape_press = None  # view position of that press, to tell a drag from a click
 
@@ -449,6 +452,9 @@ class NestView(QGraphicsView):
         return float(round(scene_pos.x())), float(round(scene_pos.y()))
 
     def update_shape(self, pos):
+        if self.shape_mode == "leadin":
+            self.update_leadin(pos)
+            return
         x, y = self.snap(pos)
         if self.shape_start is None:
             self.draft.setPath(QPainterPath())
@@ -464,16 +470,69 @@ class NestView(QGraphicsView):
         x0, y0 = self.shape_start
         x1, y1 = self.snap(pos)
         try:
-            program = rectangle_program(x0, y0, x1, y1)
+            program = self.window_.new_rectangle(x0, y0, x1, y1).program()
         except ValueError:
             return False  # too small: keep waiting for the opposite corner
         self.stop_shape()
         self.window_.add_shape(program)
         return True
 
+    def start_leadin(self, part):
+        """Point at or near a rectangle to put its lead-in on the nearest edge."""
+        self.stop_drawing()
+        self.shape_mode = "leadin"
+        self.leadin_part = part
+        self.leadin_choice = None
+        self.setCursor(Qt.CrossCursor)
+        self.setFocus()
+        self.window_.statusBar().showMessage("Peka på eller nära rektangeln och klicka där inledningen ska "
+                                             "vara. Esc avbryter.")
+
+    LEADIN_REACH = 30  # pixels from the edge that still count as pointing at it
+
+    def leadin_at(self, pos):
+        """(edge, fraction) on the rectangle nearest a view position, or None if too far away."""
+        placement = self.leadin_part.placement
+        rectangle = rectangle_of(placement.program)
+        scene = self.mapToScene(pos)
+        edge, at, distance = rectangle.nearest_edge(placement.unmap_point((scene.x(), scene.y())))
+        if distance * abs(self.transform().m11()) > self.LEADIN_REACH:
+            return None
+        return edge, round(at, 4)
+
+    def update_leadin(self, pos):
+        choice = self.leadin_at(pos)
+        self.leadin_choice = choice
+        scene = self.mapToScene(pos)
+        if choice is None:
+            self.draft.setPath(QPainterPath())
+            self.label.set_text("Peka närmare rektangeln", scene)
+            return
+        placement = self.leadin_part.placement
+        rectangle = rectangle_of(placement.program)
+        trial = Rectangle(**{**rectangle.__dict__, "edge": choice[0], "at": choice[1]})
+        start, point, _ = trial.path()
+        a, b = placement.map_point(start), placement.map_point(point)
+        path = QPainterPath(QPointF(*a))
+        path.lineTo(QPointF(*b))
+        path.addEllipse(QPointF(*b), 4 / abs(self.transform().m11()), 4 / abs(self.transform().m11()))
+        self.draft.setPath(path)
+        self.label.set_text(f"Inledning: {EDGE_NAMES[choice[0]]} kant", scene)
+
+    def finish_leadin(self):
+        part, choice = self.leadin_part, self.leadin_choice
+        if choice is None:
+            return
+        self.stop_shape()
+        self.window_.set_leadin_position(part, *choice)
+
     def shape_press_event(self, event):
         if event.button() != Qt.LeftButton:
             self.stop_shape()
+            return
+        if self.shape_mode == "leadin":
+            self.update_leadin(event.pos())
+            self.finish_leadin()
             return
         if self.shape_start is None:
             self.shape_start = self.snap(event.pos())
@@ -484,7 +543,7 @@ class NestView(QGraphicsView):
 
     def shape_release_event(self, event):
         # A drag ends at the release; a click leaves the first corner set for a second click.
-        if self.shape_start is not None and self.shape_press is not None:
+        if self.shape_mode == "rectangle" and self.shape_start is not None and self.shape_press is not None:
             moved = (event.pos() - self.shape_press).manhattanLength()
             self.shape_press = None
             if moved > QApplication.startDragDistance():
@@ -1104,6 +1163,8 @@ class MainWindow(QMainWindow):
         self.refresh_timer.setInterval(60)
         self.refresh_timer.timeout.connect(self.refresh)
 
+        self.materials = available_materials()
+        self.rectangle_defaults = {"inside": False, "material": None, "kerf": 0.0, "leadin": 0.0}
         self._build_panel()
         self._build_actions()
         self.scene_.selectionChanged.connect(self.selection_changed)
@@ -1184,18 +1245,10 @@ class MainWindow(QMainWindow):
         self.pos_x.valueChanged.connect(self.placement_edited)
         self.pos_y.valueChanged.connect(self.placement_edited)
         self.angle.valueChanged.connect(self.placement_edited)
-        place_form.addRow("X (vänster kant):", self.pos_x)
-        place_form.addRow("Y (nedre kant):", self.pos_y)
+        self.pos_x_label, self.pos_y_label = QLabel("X (vänster kant):"), QLabel("Y (nedre kant):")
+        place_form.addRow(self.pos_x_label, self.pos_x)
+        place_form.addRow(self.pos_y_label, self.pos_y)
         place_form.addRow("Vinkel:", self.angle)
-        # Only for a rectangle drawn in PlasmaNest: its exact size.
-        self.size_w = self._length_spin(1, 100000, 100)
-        self.size_h = self._length_spin(1, 100000, 100)
-        self.size_w_label, self.size_h_label = QLabel("Bredd:"), QLabel("Höjd:")
-        self.size_w.editingFinished.connect(self.size_edited)
-        self.size_h.editingFinished.connect(self.size_edited)
-        place_form.addRow(self.size_w_label, self.size_w)
-        place_form.addRow(self.size_h_label, self.size_h)
-        self.show_size_fields(None)
         row = QHBoxLayout()
         self.rotate_step = QDoubleSpinBox()
         self.rotate_step.setRange(0.01, 180)
@@ -1207,6 +1260,46 @@ class MainWindow(QMainWindow):
         place_form.addRow("Rotera:", row)
         self.place_box = place_box
         layout.addWidget(place_box)
+
+        # Only for one selected rectangle drawn in PlasmaNest.
+        rect_box = QGroupBox("Rektangel")
+        rect_form = QFormLayout(rect_box)
+        self.size_w = self._length_spin(1, 100000, 100)
+        self.size_h = self._length_spin(1, 100000, 100)
+        self.size_w_label, self.size_h_label = QLabel("Bredd:"), QLabel("Höjd:")
+        rect_form.addRow(self.size_w_label, self.size_w)
+        rect_form.addRow(self.size_h_label, self.size_h)
+        self.rect_material = QComboBox()
+        self.rect_material.addItem("Aktivt i QtPlasmaC", None)
+        for material in self.materials:
+            self.rect_material.addItem(f"{material.number}: {material.name}", material.number)
+        rect_form.addRow("Material:", self.rect_material)
+        self.rect_side = QComboBox()
+        self.rect_side.addItem("Utsida (delen)", False)
+        self.rect_side.addItem("Insida (hål)", True)
+        rect_form.addRow("Skär:", self.rect_side)
+        self.rect_kerf = self._length_spin(0, 20, 0)
+        self.rect_kerf.setSuffix(" mm")
+        rect_form.addRow("Skärspalt:", self.rect_kerf)
+        self.rect_leadin = self._length_spin(0, 1000, 0)
+        self.rect_leadin.setSuffix(" mm")
+        rect_form.addRow("Inledning:", self.rect_leadin)
+        self.leadin_button = QPushButton("Placera inledning")
+        self.leadin_button.setToolTip("Peka på eller nära rektangeln och klicka där inledningen ska vara.")
+        self.leadin_button.clicked.connect(lambda checked=False: self.place_leadin())
+        rect_form.addRow(self.leadin_button)
+        self.rect_error = QLabel()
+        self.rect_error.setWordWrap(True)
+        self.rect_error.setStyleSheet(f"color: {COLOR_OUTSIDE.name()}; font-weight: bold;")
+        self.rect_error.hide()
+        rect_form.addRow(self.rect_error)
+        for spin in (self.size_w, self.size_h, self.rect_kerf, self.rect_leadin):
+            spin.editingFinished.connect(self.rectangle_edited)
+        for combo in (self.rect_material, self.rect_side):
+            combo.currentIndexChanged.connect(lambda index: self.rectangle_edited())
+        self.rect_box = rect_box
+        layout.addWidget(rect_box)
+        self.show_rectangle_fields(None)
 
         self.show_rapids = QCheckBox("Visa snabbrörelser (G0)")
         self.show_rapids.setChecked(True)
@@ -1345,59 +1438,129 @@ class MainWindow(QMainWindow):
             if show:
                 part.handle.setPos(0, part.rect.bottom() + HANDLE_DISTANCE / scale)
 
-    def show_size_fields(self, rectangle):
-        for widget in (self.size_w_label, self.size_w, self.size_h_label, self.size_h):
-            widget.setVisible(rectangle is not None)
+    def show_rectangle_fields(self, rectangle):
+        self.rect_box.setVisible(rectangle is not None)
+        if rectangle is None:
+            return
+        self.updating_ui = True
+        for spin, value in ((self.size_w, rectangle.width), (self.size_h, rectangle.height),
+                            (self.rect_kerf, rectangle.kerf), (self.rect_leadin, rectangle.leadin)):
+            if not spin.hasFocus():
+                spin.setValue(value)
+        index = self.rect_material.findData(rectangle.material)
+        if index < 0:  # a material that is not in this machine's file
+            self.rect_material.addItem(f"{rectangle.material}: (saknas i materialfilen)", rectangle.material)
+            index = self.rect_material.count() - 1
+        self.rect_material.setCurrentIndex(index)
+        self.rect_side.setCurrentIndex(1 if rectangle.inside else 0)
+        self.rect_kerf.setEnabled(rectangle.material is None or self.material_kerf(rectangle.material) is None)
+        self.updating_ui = False
+
+    def material_kerf(self, number):
+        for material in self.materials:
+            if material.number == number:
+                return material.kerf
+        return None
+
+    def position_reference(self, placement):
+        """Where the X and Y fields point: the drawn first corner of a PlasmaNest rectangle, else the
+        lower left corner of the cut path's bounds (which include kerf and lead-in)."""
+        rectangle = rectangle_of(placement.program)
         if rectangle is not None:
-            self.updating_ui = True
-            for spin, value in ((self.size_w, rectangle[2]), (self.size_h, rectangle[3])):
-                if not spin.hasFocus():
-                    spin.setValue(value)
-            self.updating_ui = False
+            return placement.map_point((rectangle.left, rectangle.bottom))
+        return placement.bounds()[:2]
 
     def update_placement_fields(self):
         selected = self.selected_parts()
-        self.show_size_fields(rectangle_of(selected[0].placement.program) if len(selected) == 1 else None)
+        rectangle = rectangle_of(selected[0].placement.program) if len(selected) == 1 else None
+        self.show_rectangle_fields(rectangle)
+        self.pos_x_label.setText("X (ritat hörn):" if rectangle else "X (vänster kant):")
+        self.pos_y_label.setText("Y (ritat hörn):" if rectangle else "Y (nedre kant):")
         if len(selected) != 1:
             return
-        x0, y0, _, _ = selected[0].placement.bounds()
+        x0, y0 = self.position_reference(selected[0].placement)
         self.updating_ui = True
         for spin, value in ((self.pos_x, x0), (self.pos_y, y0), (self.angle, selected[0].placement.angle)):
             if not spin.hasFocus():
                 spin.setValue(value)
         self.updating_ui = False
 
-    def size_edited(self):
-        """New width or height for a rectangle. Its first corner stays put, also when rotated."""
-        if self.updating_ui:
-            return
+    def selected_rectangle(self):
         selected = self.selected_parts()
         if len(selected) != 1:
+            return None, None
+        return selected[0], rectangle_of(selected[0].placement.program)
+
+    def rectangle_edited(self):
+        """A field of the rectangle box changed: make the rectangle again with the new settings."""
+        if self.updating_ui:
             return
-        part = selected[0]
-        rectangle = rectangle_of(part.placement.program)
+        part, rectangle = self.selected_rectangle()
         if rectangle is None:
             return
-        left, bottom, width, height = rectangle
-        new_width, new_height = self.size_w.value(), self.size_h.value()
-        if abs(new_width - width) < 1e-9 and abs(new_height - height) < 1e-9:
+        material = self.rect_material.currentData()
+        kerf = self.material_kerf(material) if material is not None else None
+        changed = Rectangle(**{**rectangle.__dict__,
+                               "width": self.size_w.value(), "height": self.size_h.value(),
+                               "material": material, "inside": bool(self.rect_side.currentData()),
+                               "kerf": kerf if kerf is not None else self.rect_kerf.value(),
+                               "leadin": self.rect_leadin.value()})
+        if changed == rectangle:
+            self.show_rectangle_fields(rectangle)  # e.g. the kerf field after choosing a material
             return
+        self.replace_rectangle(part, changed)
+
+    def replace_rectangle(self, part, rectangle):
+        """Put a remade rectangle in place of the old one. Its first corner stays put, also when
+        rotated, and it keeps its place in the cutting order."""
+        try:
+            program = rectangle.program()
+        except ValueError as error:
+            self.rect_error.setText(str(error))
+            self.rect_error.show()
+            self.show_rectangle_fields(rectangle_of(part.placement.program))
+            return None
+        self.rect_error.hide()
+        self.remember_rectangle(rectangle)
         old = part.placement
-        program = rectangle_program(left, bottom, left + new_width, bottom + new_height)
-        corner = old.map_point((left, bottom))
-        moved = Placement(program, 0.0, 0.0, old.angle).map_point((left, bottom))
+        corner = old.map_point((rectangle.left, rectangle.bottom))
+        moved = Placement(program, 0.0, 0.0, old.angle).map_point((rectangle.left, rectangle.bottom))
         placement = Placement(program, corner[0] - moved[0], corner[1] - moved[1], old.angle)
         index = self.parts.index(part)
-        # Without a selection for a moment the size fields would hide and lose the keyboard focus.
+        # Without a selection for a moment the fields would hide and lose the keyboard focus.
         self.updating_ui = True
         try:
             self.remove_part(part)
             new_part = self.add_part(placement)
             self.parts.remove(new_part)
-            self.parts.insert(index, new_part)  # keep its place in the cutting order
+            self.parts.insert(index, new_part)
         finally:
             self.updating_ui = False
         self.after_change([new_part])
+        return new_part
+
+    def place_leadin(self):
+        part, rectangle = self.selected_rectangle()
+        if rectangle is not None:
+            self.view.start_leadin(part)
+
+    def set_leadin_position(self, part, edge, at):
+        rectangle = rectangle_of(part.placement.program)
+        if rectangle is not None:
+            self.replace_rectangle(part, Rectangle(**{**rectangle.__dict__, "edge": edge, "at": at}))
+
+    def remember_rectangle(self, rectangle):
+        """New rectangles start with the settings used last."""
+        self.rectangle_defaults = {"inside": rectangle.inside, "material": rectangle.material,
+                                   "kerf": rectangle.kerf, "leadin": rectangle.leadin}
+
+    def new_rectangle(self, x0, y0, x1, y1):
+        left, right = sorted((x0, x1))
+        bottom, top = sorted((y0, y1))
+        settings = dict(self.rectangle_defaults)
+        if settings["material"] is not None and self.material_kerf(settings["material"]) is not None:
+            settings["kerf"] = self.material_kerf(settings["material"])
+        return Rectangle(left, bottom, right - left, top - bottom, **settings)
 
     def placement_edited(self):
         if self.updating_ui:
@@ -1407,7 +1570,7 @@ class MainWindow(QMainWindow):
             return
         part = selected[0]
         part.set_angle(self.angle.value())
-        x0, y0, _, _ = part.placement.bounds()
+        x0, y0 = self.position_reference(part.placement)
         part.set_center(part.placement.x + self.pos_x.value() - x0, part.placement.y + self.pos_y.value() - y0)
         self.refresh()
         self.commit()
