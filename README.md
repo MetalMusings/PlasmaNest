@@ -75,6 +75,19 @@ Tryck **Save**, så dyker knappen upp på MAIN-fliken. Ändra sökvägen om Plas
 - Ta hörnen i ordning runt plåten. **Rensa alla** innan en ny plåt mäts upp.
 - Säkerhetsmarginalen flyttar varje kant inåt. Blir formen ogiltig av marginalen vägras plåten.
 
+## Öppna exporten i QtPlasmaC med en knapp
+
+På en Linux-dator med `~/linuxcnc/nc_files` föreslår **Exportera** katalogen
+`~/linuxcnc/nc_files/plasmanest/`. Lägg in en knapp i QtPlasmaC under **SETTINGS** → **USER BUTTONS**:
+
+| Name | Code |
+|---|---|
+| `Ladda\nest` | `latest-file /home/debian/linuxcnc/nc_files/plasmanest` |
+
+Knappen öppnar den senast exporterade `.ngc`-filen i katalogen. Den fungerar bara när maskinen
+står still. Exporterar du till en annan katalog hittar knappen inte filen, och statusraden i
+PlasmaNest påminner om det.
+
 ## Två sorters filer
 
 - **Exportera till QtPlasmaC (.ngc)**, Ctrl+E: filen du öppnar i QtPlasmaC och skär med.

@@ -28,6 +28,10 @@ HANDLE_DISTANCE = 42   # pixels from the figure to the rotation handle
 ROTATE_SNAP = 15.0     # degrees with Ctrl held
 ROTATE_MIN_RADIUS = 15 # pixels from the pivot; closer than this the angle is too jumpy
 
+# QtPlasmaC's user button "latest-file <dir>" opens the newest .ngc in this directory.
+NC_FILES = os.path.join(os.path.expanduser("~"), "linuxcnc", "nc_files")
+EXPORT_DIR_NAME = "plasmanest"
+
 COLOR_CUT = QColor("#1565c0")
 COLOR_SELECTED = QColor("#00a152")
 COLOR_OVERLAP = QColor("#ef6c00")
@@ -1476,10 +1480,26 @@ class MainWindow(QMainWindow):
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if answer != QMessageBox.Yes:
                 return
-        suggestion = os.path.splitext(self.project_path)[0] + ".ngc" if self.project_path else "nest.ngc"
-        path, _ = QFileDialog.getSaveFileName(self, "Exportera till QtPlasmaC", suggestion, "G-kod (*.ngc)")
+        path, _ = QFileDialog.getSaveFileName(self, "Exportera till QtPlasmaC", self.export_suggestion(),
+                                              "G-kod (*.ngc)")
         if path:
             self.export_to(path)
+
+    @staticmethod
+    def export_dir():
+        """The directory QtPlasmaC's latest-file button reads, or None if LinuxCNC's is missing."""
+        return os.path.join(NC_FILES, EXPORT_DIR_NAME) if os.path.isdir(NC_FILES) else None
+
+    def export_suggestion(self):
+        directory = self.export_dir()
+        if directory is None:
+            return os.path.splitext(self.project_path)[0] + ".ngc" if self.project_path else "nest.ngc"
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except OSError:
+            return "nest.ngc"
+        name = os.path.splitext(os.path.basename(self.project_path))[0] if self.project_path else "nest"
+        return os.path.join(directory, name + ".ngc")
 
     def export_to(self, path):
         if not path.lower().endswith(".ngc"):
@@ -1491,7 +1511,14 @@ class MainWindow(QMainWindow):
         except OSError as error:
             QMessageBox.critical(self, "Kan inte exportera", str(error))
             return False
-        self.statusBar().showMessage(f"Exporterade {len(self.parts)} figurer till {path}", 8000)
+        message = f"Exporterade {len(self.parts)} figurer till {path}"
+        directory = self.export_dir()
+        if directory is not None:
+            if os.path.normcase(os.path.dirname(os.path.abspath(path))) == os.path.normcase(directory):
+                message += ". Öppna den i QtPlasmaC med knappen Ladda nest."
+            else:
+                message += f". Knappen Ladda nest i QtPlasmaC hittar bara filer i {directory}."
+        self.statusBar().showMessage(message, 15000)
         return True
 
     def closeEvent(self, event):

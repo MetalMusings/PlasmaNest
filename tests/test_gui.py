@@ -622,3 +622,32 @@ def test_corner_dialog_refuses_bad_input_and_stays_open(window, edit, message):
     dialog.accept()
     assert dialog.sheet is None and dialog.result() != QDialog.Accepted
     assert message in dialog.error.text()
+
+
+def test_export_goes_where_the_latest_file_button_looks(window, tmp_path, monkeypatch):
+    import glob
+    import time
+    from plasmanest import gui
+    monkeypatch.setattr(gui, "NC_FILES", str(tmp_path / "missing"))
+    assert window.export_dir() is None
+    assert window.export_suggestion() == "nest.ngc"
+
+    nc_files = tmp_path / "nc_files"
+    nc_files.mkdir()
+    monkeypatch.setattr(gui, "NC_FILES", str(nc_files))
+    directory = nc_files / "plasmanest"
+    assert window.export_suggestion() == str(directory / "nest.ngc") and directory.is_dir()
+    window.project_path = str(tmp_path / "plåt 3.pnest")
+    assert window.export_suggestion() == str(directory / "plåt 3.ngc")
+
+    window.load_paths([FLANS])
+    assert window.export_to(str(directory / "a.ngc"))
+    assert "Ladda nest" in window.statusBar().currentMessage()
+    time.sleep(0.02)
+    assert window.export_to(str(directory / "b.ngc"))
+    time.sleep(0.02)
+    assert window.export_to(str(directory / "a.ngc"))
+    # QtPlasmaC's latest-file: max(glob('<dir>/*.ngc'), key=os.path.getctime)
+    assert max(glob.glob(f"{directory}/*.ngc"), key=os.path.getctime) == str(directory / "a.ngc")
+    assert window.export_to(str(tmp_path / "elsewhere.ngc"))
+    assert "hittar bara filer i" in window.statusBar().currentMessage()
