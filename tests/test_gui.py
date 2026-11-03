@@ -773,3 +773,35 @@ def test_menus_are_moved_by_the_embedding_offset_but_not_their_sub_menus(window)
         other.close()
     finally:
         QApplication.instance().removeEventFilter(placer)
+
+
+CONVERSATIONAL = os.path.join(os.path.dirname(__file__), "data", "conversational_circles.ngc")
+
+
+@pytest.fixture
+def messages(monkeypatch):
+    from plasmanest import gui
+    shown = []
+    for kind in ("information", "warning", "critical"):
+        monkeypatch.setattr(gui.QMessageBox, kind, lambda parent, title, text, *a, kind=kind: shown.append((kind, text)))
+    return shown
+
+
+def test_shapes_from_conversational_become_a_figure(window, messages):
+    part = window.load_conversational(CONVERSATIONAL)
+    assert part is not None and messages == []
+    assert part.placement.program.name.startswith("CONVERSATIONAL ")
+    assert window.sheet.contains_placement(part.placement)
+
+
+def test_conversational_without_shapes_or_with_the_main_file_is_explained(window, messages, tmp_path):
+    assert window.load_conversational(str(tmp_path / "missing.ngc")) is None
+    empty = tmp_path / "backup.ngc"
+    empty.write_text("(new conversational file)\nM2\n")
+    assert window.load_conversational(str(empty)) is None
+    filtered = tmp_path / "filtered.ngc"
+    filtered.write_text(open(CONVERSATIONAL).read() + ";qtplasmac filtered G-code file")
+    assert window.load_conversational(str(filtered)) is None
+    assert [kind for kind, text in messages] == ["information", "critical", "information"]
+    assert "tom" in messages[1][1] and "MAIN" in messages[2][1]
+    assert window.parts == []

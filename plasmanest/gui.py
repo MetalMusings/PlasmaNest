@@ -4,6 +4,7 @@ import math
 import os
 import signal
 import sys
+import time
 
 from PyQt5.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, QSize, QSocketNotifier, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import (QBrush, QColor, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPainterPathStroker,
@@ -16,7 +17,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox
                              QTableWidgetItem, QToolTip, QVBoxLayout, QWidget)
 
 from . import live, machine
-from .gcode import GCodeError, load_program
+from .gcode import GCodeError, Program, load_program
 from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
 
 APP_NAME = "PlasmaNest"
@@ -28,6 +29,9 @@ NUDGE_STEP_LARGE = 10.0
 HANDLE_DISTANCE = 42   # pixels from the figure to the rotation handle
 ROTATE_SNAP = 15.0     # degrees with Ctrl held
 ROTATE_MIN_RADIUS = 15 # pixels from the pivot; closer than this the angle is too jumpy
+
+# QtPlasmaC (2.9) keeps the shapes accepted in CONVERSATIONAL here; SEND loads this file.
+CONVERSATIONAL_FILE = "/tmp/qtplasmac/backup.ngc"
 
 # Where unsaved work goes when QtPlasmaC ends an embedded PlasmaNest.
 AUTOSAVE_FILE = os.path.join(os.path.dirname(machine.POINTS_FILE), "autosave.pnest")
@@ -1015,6 +1019,11 @@ class MainWindow(QMainWindow):
         self.copy_button = self._button("Kopiera…", self.copy_selection, row)
         parts_layout.addLayout(row)
         row = QHBoxLayout()
+        self.conversational_button = self._button("Hämta från CONVERSATIONAL", self.load_conversational, row)
+        self.conversational_button.setToolTip("Lägger till figurerna som godkänts i QtPlasmaC:s CONVERSATIONAL.")
+        self.conversational_button.setVisible(os.path.isdir(os.path.dirname(CONVERSATIONAL_FILE)))
+        parts_layout.addLayout(row)
+        row = QHBoxLayout()
         self.delete_button = self._button("Ta bort", self.delete_selection, row)
         self.delete_all_button = self._button("Ta bort hela G-koden", self.delete_programs, row)
         parts_layout.addLayout(row)
@@ -1351,6 +1360,39 @@ class MainWindow(QMainWindow):
             added.append(self.add_part(placement))
         if added:
             self.after_change(added)
+
+    def load_conversational(self, path=None):
+        """Add the shapes accepted in QtPlasmaC's CONVERSATIONAL tab as one figure."""
+        path = path or CONVERSATIONAL_FILE
+        title = "Hämta från CONVERSATIONAL"
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                text = handle.read()
+        except OSError:
+            QMessageBox.information(self, title, "Det finns inget från CONVERSATIONAL. Skapa en figur där "
+                                                 "och godkänn den med ADD eller ACCEPT.")
+            return None
+        if ";qtplasmac filtered g-code file" in text.lower():
+            QMessageBox.information(self, title, "CONVERSATIONAL innehåller den fil som var inläst i MAIN, "
+                                                 "inte en ny figur. Tryck NEW i CONVERSATIONAL och skapa "
+                                                 "figuren där.")
+            return None
+        name = "CONVERSATIONAL " + time.strftime("%H:%M:%S")
+        try:
+            program = Program(name, text)
+        except GCodeError as error:
+            message = str(error)
+            if "inga XY-rörelser" in message or "inga skärande" in message:
+                message = "CONVERSATIONAL är tom. Skapa en figur där och godkänn den med ADD eller ACCEPT."
+            QMessageBox.critical(self, title, message)
+            return None
+        if program.warnings:
+            QMessageBox.warning(self, title, "\n".join(program.warnings))
+        placement = Placement(program)
+        self.place_free(placement)
+        part = self.add_part(placement)
+        self.after_change([part])
+        return part
 
     def copy_selection(self):
         selected = self.selected_parts()

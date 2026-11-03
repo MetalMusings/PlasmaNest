@@ -350,8 +350,13 @@ class Program:
 
     def _parse_comment_line(self, line, number):
         lowered = line.lower().replace(" ", "")
-        if lowered.startswith(";conversationalblock") or lowered.startswith(";qtplasmacfilteredg-codefile"):
-            # The filter requires these on line 1, which is not where they would end up.
+        if lowered.startswith(";qtplasmacfilteredg-codefile"):
+            # Exported, it would go through the filter again: holes would get a second overburn.
+            raise GCodeError("Filen har redan gått genom QtPlasmaC:s filter, som har lagt till "
+                             "överbränning och hastighetsändringar vid hål. Läs in originalfilen i "
+                             "stället.", number)
+        if lowered.startswith(";conversationalblock"):
+            # The filter requires this on line 1, which is not where it would end up.
             self.warnings.append(f"Rad {number}: QtPlasmaC-rubriken togs bort.")
             return
         match = re.match(r"^\(o=(\d)", lowered)

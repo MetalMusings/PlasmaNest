@@ -223,11 +223,17 @@ def test_torch_left_on_is_switched_off_between_parts():
     assert text.index("M5 $-1") > text.index("G1 X")
 
 
-def test_qtplasmac_headers_are_removed():
-    program = Program("a", ";qtplasmac filtered G-code file\n" + BASIC)
-    assert "filtered" not in export_gcode([Placement(program)])
+def test_conversational_header_is_removed():
     program = Program("a", ";conversational block\n" + BASIC)
     assert "conversational" not in export_gcode([Placement(program)])
+
+
+def test_already_filtered_file_is_refused():
+    # QtPlasmaC writes the marker last; exported, the file would be filtered a second time.
+    with pytest.raises(GCodeError, match="filter"):
+        Program("a", BASIC + ";qtplasmac filtered G-code file")
+    with pytest.raises(GCodeError, match="filter"):
+        Program("a", ";qtplasmac filtered G-code file\n" + BASIC)
 
 
 def test_export_has_no_constructs_the_filter_rejects():
