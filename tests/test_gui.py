@@ -1097,3 +1097,47 @@ def test_leadin_is_placed_by_pointing_near_the_circle(window):
     assert c.angle == pytest.approx(90)
     cut, = [p for p in window.parts[0].placement.program.paths if p.kind == "cut"]
     assert cut.points[0] == pytest.approx((200, 235)) and cut.points[1] == pytest.approx((200, 230))
+
+
+def test_drawing_another_kind_of_figure_does_not_change_the_new_one(window):
+    # Hiding the focused width field used to remake the new circle from the rectangle's fields.
+    from plasmanest.shapes import Circle, Rectangle, shape_of
+    window.activateWindow()
+    window.add_shape(Rectangle(600, 300, 400, 200, kerf=1.2).program())
+    assert window.size_w.hasFocus()
+    window.add_shape(Circle(1200, 400, 150, inside=True, kerf=1.2, leadin=10).program())
+    assert shape_of(window.parts[1].placement.program) == Circle(1200, 400, 150, inside=True, kerf=1.2, leadin=10)
+    assert shape_of(window.parts[0].placement.program) == Rectangle(600, 300, 400, 200, kerf=1.2)
+    window.scene_.clearSelection()
+    window.parts[0].setSelected(True)
+    assert shape_of(window.parts[1].placement.program).diameter == 150
+    assert shape_of(window.parts[0].placement.program).width == 400
+
+
+def test_theme_follows_qtplasmac_colours(tmp_path):
+    from plasmanest import theme
+    ini = tmp_path / "Mill.ini"
+    ini.write_text("# not configparser-friendly\n[EMC]\nMACHINE = Mill\n")
+    (tmp_path / "Mill.prefs").write_text("[COLOR_OPTIONS]\nForeground = #00ff00\nBackground = nonsense\n")
+    colors = theme.qtplasmac_colors(str(ini))
+    assert colors["Foreground"] == "#00ff00" and colors["Background"] == theme.DEFAULTS["Background"]
+    assert theme.qtplasmac_colors(str(tmp_path / "missing.ini")) == theme.DEFAULTS
+    sheet = theme.stylesheet(colors)
+    assert "#00ff00" in sheet and "QPushButton:pressed" in sheet
+
+
+def test_apply_theme_colours_the_view(app):
+    from plasmanest import gui, theme
+    saved = {name: getattr(gui, name) for name in dir(gui) if name.startswith("COLOR_")}
+    try:
+        gui.apply_theme(app, theme.DEFAULTS)
+        assert gui.COLOR_VIEW.name() == "#000000" and gui.COLOR_CUT.name() == "#ffee06"
+        assert gui.COLOR_SHEET.name() == "#36362e"
+        win = gui.MainWindow()
+        assert win.view.backgroundBrush().color().name() == "#000000"
+        win.saved_state = win.undo_stack[win.undo_index]
+        win.close()
+    finally:
+        app.setStyleSheet("")
+        for name, value in saved.items():
+            setattr(gui, name, value)

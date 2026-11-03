@@ -20,6 +20,7 @@ from . import live, machine
 from .gcode import GCodeError, Program, load_program
 from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
 from .materials import available_materials
+from .theme import qtplasmac_colors, stylesheet
 from .shapes import Circle, Rectangle, shape_of
 
 APP_NAME = "PlasmaNest"
@@ -53,6 +54,40 @@ COLOR_GRID = QColor("#ccd2d7")
 COLOR_VIEW = QColor("#90a4ae")
 COLOR_ORIGIN = QColor("#6a1b9a")
 COLOR_DRAFT = QColor("#c2185b")
+COLOR_TEXT = QColor("#263238")       # text drawn in the view
+COLOR_LABEL_BG = QColor(255, 255, 255, 230)
+COLOR_HELP = QColor("#607d8b")
+
+
+def blend(a, b, amount):
+    """a moved amount (0..1) of the way towards b."""
+    a, b = QColor(a), QColor(b)
+    return QColor(round(a.red() + (b.red() - a.red()) * amount), round(a.green() + (b.green() - a.green()) * amount),
+                  round(a.blue() + (b.blue() - a.blue()) * amount))
+
+
+def apply_theme(app, colors):
+    """QtPlasmaC's look: its style sheet for the widgets, and its colours in the view.
+    Call before the main window is built: the view reads these colours as it draws."""
+    global COLOR_CUT, COLOR_SELECTED, COLOR_OVERLAP, COLOR_OUTSIDE, COLOR_RAPID, COLOR_SHEET
+    global COLOR_SHEET_EDGE, COLOR_GRID, COLOR_VIEW, COLOR_ORIGIN, COLOR_DRAFT, COLOR_TEXT, COLOR_LABEL_BG, COLOR_HELP
+    app.setStyleSheet(stylesheet(colors))
+    fg, bg, alt = QColor(colors["Foreground"]), QColor(colors["Background"]), QColor(colors["Background Alt"])
+    COLOR_VIEW = QColor(colors["Preview"])
+    COLOR_SHEET = alt
+    COLOR_SHEET_EDGE = QColor(colors["Frames"])
+    COLOR_GRID = blend(alt, fg, 0.12)
+    COLOR_CUT = fg
+    COLOR_TEXT = fg
+    COLOR_LABEL_BG = QColor(bg.red(), bg.green(), bg.blue(), 235)
+    COLOR_HELP = QColor(colors["Disabled"])
+    # The meanings stay, in shades that show on a dark ground.
+    COLOR_SELECTED = QColor("#33d17a")
+    COLOR_OVERLAP = QColor("#ff9f1a")
+    COLOR_OUTSIDE = QColor(colors["Estop"])
+    COLOR_RAPID = QColor("#8a8a80")
+    COLOR_ORIGIN = QColor("#c77dff")
+    COLOR_DRAFT = QColor("#ff4fa0")
 
 
 def cosmetic_pen(color, width=1.0, style=Qt.SolidLine):
@@ -216,7 +251,7 @@ class PartItem(QGraphicsItem):
         self.label = QGraphicsSimpleTextItem(self)
         self.label.setFlag(QGraphicsItem.ItemIgnoresTransformations)
         self.label.setAcceptedMouseButtons(Qt.NoButton)
-        self.label.setBrush(QBrush(QColor("#263238")))
+        self.label.setBrush(QBrush(COLOR_TEXT))
 
         self.setPos(placement.x, placement.y)
         self.setRotation(placement.angle)
@@ -315,9 +350,9 @@ class DraftLabel(QGraphicsItem):
     def paint(self, painter, option, widget=None):
         rect = self._rect()
         painter.setPen(QPen(COLOR_DRAFT, 1))
-        painter.setBrush(QBrush(QColor(255, 255, 255, 230)))
+        painter.setBrush(QBrush(COLOR_LABEL_BG))
         painter.drawRoundedRect(rect, 3, 3)
-        painter.setPen(QPen(QColor("#263238")))
+        painter.setPen(QPen(COLOR_TEXT))
         painter.drawText(rect, Qt.AlignCenter, self.text)
 
 
@@ -925,7 +960,7 @@ class PointsPreview(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), QColor("white"))
+        painter.fillRect(self.rect(), COLOR_VIEW)
         painter.setPen(QPen(COLOR_GRID))
         painter.drawRect(self.rect().adjusted(0, 0, -1, -1))
         if not self.corners:
@@ -1359,7 +1394,7 @@ class MainWindow(QMainWindow):
                             "Högerdrag på tom yta eller mittendrag: panorera.\n"
                             "Pilar: flytta 1 mm (Shift: 10 mm).")
         help_label.setWordWrap(True)
-        help_label.setStyleSheet("color: #607d8b;")
+        help_label.setStyleSheet(f"color: {COLOR_HELP.name()};")
         layout.addWidget(help_label)
 
         dock = QDockWidget("Verktyg", self)
@@ -1473,18 +1508,32 @@ class MainWindow(QMainWindow):
             if show:
                 part.handle.setPos(0, part.rect.bottom() + HANDLE_DISTANCE / scale)
 
-    def show_rectangle_fields(self, shape):
-        """The box for a figure drawn in PlasmaNest: a rectangle or a circle."""
-        self.rect_box.setVisible(shape is not None)
-        if shape is None:
-            return
-        circle = isinstance(shape, Circle)
-        self.rect_box.setTitle("Cirkel" if circle else "Rektangel")
-        for widget in (self.size_w_label, self.size_w, self.size_h_label, self.size_h):
-            widget.setVisible(not circle)
-        for widget in (self.size_d_label, self.size_d):
-            widget.setVisible(circle)
+    def show_rectangle_fields(self, shape, part=None):
+        """The box for a figure drawn in PlasmaNest: a rectangle or a circle.
+
+        Hiding a field that has the keyboard focus makes Qt report it as edited, with the old
+        figure's values still in the fields. Hence no edits while switching, and edits only apply
+        to the part whose values the fields show.
+        """
+        updating = self.updating_ui
         self.updating_ui = True
+        try:
+            self.fields_part = part if shape is not None else None
+            self.rect_box.setVisible(shape is not None)
+            if shape is None:
+                return
+            circle = isinstance(shape, Circle)
+            self.rect_box.setTitle("Cirkel" if circle else "Rektangel")
+            for widget in (self.size_w_label, self.size_w, self.size_h_label, self.size_h):
+                widget.setVisible(not circle)
+            for widget in (self.size_d_label, self.size_d):
+                widget.setVisible(circle)
+            self._fill_shape_fields(shape)
+        finally:
+            self.updating_ui = updating
+
+    def _fill_shape_fields(self, shape):
+        circle = isinstance(shape, Circle)
         sizes = ((self.size_d, shape.diameter),) if circle else ((self.size_w, shape.width), (self.size_h, shape.height))
         for spin, value in sizes + ((self.rect_kerf, shape.kerf), (self.rect_leadin, shape.leadin)):
             if not spin.hasFocus():
@@ -1496,7 +1545,6 @@ class MainWindow(QMainWindow):
         self.rect_material.setCurrentIndex(index)
         self.rect_side.setCurrentIndex(1 if shape.inside else 0)
         self.rect_kerf.setEnabled(shape.material is None or self.material_kerf(shape.material) is None)
-        self.updating_ui = False
 
     def material_kerf(self, number):
         for material in self.materials:
@@ -1519,7 +1567,7 @@ class MainWindow(QMainWindow):
     def update_placement_fields(self):
         selected = self.selected_parts()
         shape = shape_of(selected[0].placement.program) if len(selected) == 1 else None
-        self.show_rectangle_fields(shape)
+        self.show_rectangle_fields(shape, selected[0] if shape is not None else None)
         x_label, y_label = self.POSITION_LABELS[type(shape)]
         self.pos_x_label.setText(x_label)
         self.pos_y_label.setText(y_label)
@@ -1544,8 +1592,8 @@ class MainWindow(QMainWindow):
         if self.updating_ui:
             return
         part, shape = self.selected_rectangle()
-        if shape is None:
-            return
+        if shape is None or part is not getattr(self, "fields_part", None):
+            return  # the fields show another figure's values
         material = self.rect_material.currentData()
         kerf = self.material_kerf(material) if material is not None else None
         changes = {"material": material, "inside": bool(self.rect_side.currentData()),
@@ -1556,7 +1604,7 @@ class MainWindow(QMainWindow):
             changes.update(width=self.size_w.value(), height=self.size_h.value())
         changed = type(shape)(**{**shape.__dict__, **changes})
         if changed == shape:
-            self.show_rectangle_fields(shape)  # e.g. the kerf field after choosing a material
+            self.show_rectangle_fields(shape, part)  # e.g. the kerf field after choosing a material
             return
         self.replace_rectangle(part, changed)
 
@@ -1568,7 +1616,7 @@ class MainWindow(QMainWindow):
         except ValueError as error:
             self.rect_error.setText(str(error))
             self.rect_error.show()
-            self.show_rectangle_fields(shape_of(part.placement.program))
+            self.show_rectangle_fields(shape_of(part.placement.program), part)
             return None
         self.rect_error.hide()
         self.remember_rectangle(shape)
@@ -2379,6 +2427,7 @@ def main(argv=None):
     paths = [a for a in argv[1:] if a != "--embed"]
     app = QApplication(argv[:1])
     app.setApplicationName(APP_NAME)
+    apply_theme(app, qtplasmac_colors())
     window = MainWindow()
     if embed:
         announce_window(window)

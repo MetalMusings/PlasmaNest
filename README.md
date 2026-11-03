@@ -141,6 +141,11 @@ När en rektangel eller cirkel är markerad visar panelen rutan **Rektangel** el
 - En omöjlig inställning vägras med ett rött meddelande, till exempel en inledning som inte får
   plats i hålet.
 
+## Utseende
+
+PlasmaNest har QtPlasmaC:s färger, som läses från QtPlasmaC:s inställningar (`[COLOR_OPTIONS]`).
+Ändras färgerna i QtPlasmaC följer PlasmaNest med vid nästa start.
+
 ## Två sorters filer
 
 - **Exportera till QtPlasmaC (.ngc)**, Ctrl+E: filen du öppnar i QtPlasmaC och skär med.
