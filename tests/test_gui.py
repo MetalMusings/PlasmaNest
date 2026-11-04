@@ -1313,3 +1313,114 @@ def test_slot_leadin_is_placed_by_pointing_and_slot_holes_in_a_part_are_fine(win
     assert (slot.edge, slot.at) == (1, 0.5)
     cut, = [p for p in window.parts[1].placement.program.paths if p.kind == "cut"]
     assert cut.points[0] == pytest.approx((235.25, 200)) and cut.points[1] == pytest.approx((239.25, 200))
+
+
+def drag_edge(win, start, end, steps=4):
+    mouse(win, QEvent.MouseMove, start, buttons=Qt.NoButton, button=Qt.NoButton)
+    mouse(win, QEvent.MouseButtonPress, start)
+    for i in range(1, steps + 1):
+        point = (start[0] + (end[0] - start[0]) * i / steps, start[1] + (end[1] - start[1]) * i / steps)
+        mouse(win, QEvent.MouseMove, point, button=Qt.NoButton)
+    mouse(win, QEvent.MouseButtonRelease, end, buttons=Qt.NoButton)
+
+
+def test_drag_a_rectangle_edge_or_corner_to_resize_it(window):
+    from plasmanest.shapes import Rectangle, shape_of
+    zoom_in(window, 200, 200)
+    window.add_shape(Rectangle(150, 160, 100, 60, kerf=1.5, leadin=3).program())
+    mouse(window, QEvent.MouseMove, (250.5, 190), buttons=Qt.NoButton, button=Qt.NoButton)
+    assert window.view.viewport().cursor().shape() == Qt.SizeHorCursor
+    mouse(window, QEvent.MouseMove, (200, 190), buttons=Qt.NoButton, button=Qt.NoButton)
+    assert window.view.viewport().cursor().shape() != Qt.SizeHorCursor  # inside: moves
+    drag_edge(window, (250.5, 190), (270.2, 195))
+    assert shape_of(window.parts[0].placement.program) == Rectangle(150, 160, 120, 60, kerf=1.5, leadin=3)
+    assert window.parts[0].placement.map_point((150, 160)) == pytest.approx((150, 160))  # the rest stays
+    assert window.view.draft.path().isEmpty() and window.view.label.text == ""
+    drag_edge(window, (150, 220), (140, 240))  # the top left corner
+    assert shape_of(window.parts[0].placement.program) == Rectangle(140, 160, 130, 80, kerf=1.5, leadin=3)
+    window.undo()
+    assert shape_of(window.parts[0].placement.program) == Rectangle(150, 160, 120, 60, kerf=1.5, leadin=3)
+
+
+def test_resize_follows_a_turned_figure_and_shows_the_size(window):
+    from plasmanest.shapes import Rectangle, shape_of
+    zoom_in(window, 200, 200)
+    window.add_shape(Rectangle(150, 170, 100, 60).program())
+    window.parts[0].setSelected(True)
+    window.angle.setValue(90)  # about the drawn corner (150, 170): the right edge now points up
+    mouse(window, QEvent.MouseMove, (120, 270), buttons=Qt.NoButton, button=Qt.NoButton)
+    assert window.view.viewport().cursor().shape() == Qt.SizeVerCursor
+    mouse(window, QEvent.MouseButtonPress, (120, 270))
+    mouse(window, QEvent.MouseMove, (120, 290), button=Qt.NoButton)
+    assert window.view.label.text == "120 × 60 mm" and not window.view.draft.path().isEmpty()
+    QTest.keyClick(window.view, Qt.Key_Escape)  # cancels
+    mouse(window, QEvent.MouseButtonRelease, (120, 290), buttons=Qt.NoButton)
+    assert shape_of(window.parts[0].placement.program).width == 100
+    drag_edge(window, (120, 270), (120, 290))
+    assert shape_of(window.parts[0].placement.program).width == 120
+    assert window.parts[0].placement.map_point((150, 170)) == pytest.approx((150, 170))
+
+
+def test_drag_circles_hole_circles_and_slots_to_resize_them(window):
+    from plasmanest.shapes import Circle, HoleCircle, Slot, shape_of
+    zoom_in(window, 200, 200)
+    window.add_shape(Circle(120, 200, 40, inside=True, kerf=1.5).program())
+    drag_edge(window, (140.5, 200), (145, 200))
+    assert shape_of(window.parts[0].placement.program).diameter == 50
+    window.add_shape(HoleCircle(220, 200, 80, holes=4, hole_diameter=20).program())
+    drag_edge(window, (270, 200), (272, 200))  # the hole at 0°, centre (260, 200)
+    assert shape_of(window.parts[1].placement.program).hole_diameter == 24
+    window.add_shape(Slot(200, 270, 80, 20).program())
+    drag_edge(window, (240, 270), (250, 270))  # the right end: the left end stays
+    slot = shape_of(window.parts[2].placement.program)
+    assert (slot.length, slot.cx - slot.length / 2) == (90, 160)
+    drag_edge(window, (200, 280), (200, 285))  # a side: the width
+    assert shape_of(window.parts[2].placement.program).width == 30
+
+
+def test_small_figures_are_moved_not_resized(window):
+    from plasmanest.shapes import Circle
+    zoom_in(window, 200, 200)
+    window.add_shape(Circle(200, 200, 5, inside=True, kerf=1.5).program())  # 20 pixels across
+    before = window.parts[0].placement.program.text
+    drag_edge(window, (202.5, 200), (212.5, 200))
+    assert window.parts[0].placement.program.text == before
+    assert window.parts[0].placement.map_point((200, 200)) == pytest.approx((210, 200))
+
+
+def test_drag_the_circle_between_the_holes_to_size_a_hole_circle(window):
+    from plasmanest.shapes import HoleCircle, shape_of
+    zoom_in(window, 220, 200)
+    window.add_shape(HoleCircle(220, 200, 80, holes=4, hole_diameter=20).program())
+    part = window.parts[0]
+    assert not part.guide_path.isEmpty()
+    assert part.sceneBoundingRect().contains(QPointF(220 + 40 * math.cos(math.radians(45)),
+                                                     200 + 40 * math.sin(math.radians(45))))
+    between = (220 + 40 * math.cos(math.radians(45)), 200 + 40 * math.sin(math.radians(45)))
+    mouse(window, QEvent.MouseMove, between, buttons=Qt.NoButton, button=Qt.NoButton)
+    assert window.view.viewport().cursor().shape() == Qt.SizeBDiagCursor
+    mouse(window, QEvent.MouseButtonPress, between)
+    outward = (220 + 50 * math.cos(math.radians(45)), 200 + 50 * math.sin(math.radians(45)))
+    mouse(window, QEvent.MouseMove, outward, button=Qt.NoButton)
+    assert window.view.label.text == "Ø 100 mm, 4 × Ø 20 mm"
+    mouse(window, QEvent.MouseButtonRelease, outward, buttons=Qt.NoButton)
+    shape = shape_of(window.parts[0].placement.program)
+    assert (shape.diameter, shape.hole_diameter, shape.cx, shape.cy) == (100, 20, 220, 200)
+    # Too small for the holes: refused, the figure stays as it was.
+    drag_edge(window, (220 + 50 * math.cos(math.radians(45)), 200 + 50 * math.sin(math.radians(45))),
+              (220 + 10 * math.cos(math.radians(45)), 200 + 10 * math.sin(math.radians(45))))
+    assert shape_of(window.parts[0].placement.program).diameter == 100
+    # The circle where it runs through a hole moves the figure; the hole's edge sizes the holes.
+    drag_edge(window, (270, 200), (272, 200))
+    assert shape_of(window.parts[0].placement.program).diameter == 100
+    assert window.parts[0].placement.map_point((220, 200)) == pytest.approx((222, 200))
+    drag_edge(window, (282, 200), (284, 200))
+    assert shape_of(window.parts[0].placement.program).hole_diameter == 24
+
+
+def test_a_small_hole_can_be_grabbed_at_its_centre(window):
+    from plasmanest.shapes import Circle
+    zoom_in(window, 200, 200)
+    window.add_shape(Circle(200, 200, 20, inside=True, kerf=1.5).program())  # lead-in from the centre
+    drag_edge(window, (200, 200), (230, 210))
+    assert window.parts[0].placement.map_point((200, 200)) == pytest.approx((230, 210))

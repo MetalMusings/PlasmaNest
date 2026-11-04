@@ -33,6 +33,7 @@ NUDGE_STEP_LARGE = 10.0
 HANDLE_DISTANCE = 42   # pixels from the figure to the rotation handle
 ROTATE_SNAP = 15.0     # degrees with Ctrl held
 ROTATE_MIN_RADIUS = 15 # pixels from the pivot; closer than this the angle is too jumpy
+RESIZE_REACH = 6  # pixels from a drawn figure's outline where dragging resizes it
 
 # QtPlasmaC (2.9) keeps the shapes accepted in CONVERSATIONAL here; SEND loads this file.
 CONVERSATIONAL_FILE = "/tmp/qtplasmac/backup.ngc"
@@ -249,6 +250,13 @@ class PartItem(QGraphicsItem):
         self.state = "ok"
         self.show_rapids = True
         self.on_sheet_cache = (None, True)
+        self.drawn_shape = shape_of(placement.program)  # the parts are remade when it changes
+        # Construction lines that are not cut: a hole circle's circle through the hole centres.
+        self.guide_path = QPainterPath()
+        if isinstance(self.drawn_shape, HoleCircle):
+            centre = QPointF(self.drawn_shape.cx - placement.program.center[0],
+                             self.drawn_shape.cy - placement.program.center[1])
+            self.guide_path.addEllipse(centre, self.drawn_shape.diameter / 2, self.drawn_shape.diameter / 2)
         program = placement.program
         cx, cy = program.center
         self.cut_path = QPainterPath()
@@ -267,8 +275,9 @@ class PartItem(QGraphicsItem):
 
         stroker = QPainterPathStroker()
         stroker.setWidth(6.0)
+        self.stroke_path = stroker.createStroke(self.cut_path)
         self.hit_shape = QPainterPath(self.fill_path)
-        self.hit_shape.addPath(stroker.createStroke(self.cut_path))
+        self.hit_shape.addPath(self.stroke_path)
 
         self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable
                       | QGraphicsItem.ItemSendsGeometryChanges | QGraphicsItem.ItemIsFocusable)
@@ -318,11 +327,27 @@ class PartItem(QGraphicsItem):
         return self.on_sheet_cache[1]
 
     def boundingRect(self):
-        rect = self.cut_path.boundingRect().united(self.rapid_path.boundingRect())
+        rect = self.cut_path.boundingRect().united(self.rapid_path.boundingRect()).united(
+            self.guide_path.boundingRect())
         return rect.adjusted(-2, -2, 2, 2)
 
     def shape(self):
         return self.hit_shape
+
+    # Hit tests use the fill and the stroke round the cut separately. In one odd-even path the
+    # stroke cuts a gap in the fill where they overlap, as round a lead-in from a hole's centre,
+    # and the figure cannot be grabbed there. Uniting the paths instead takes seconds for a large
+    # file. The view tests a pixel's square with collidesWithPath, the scene a point with contains.
+
+    def contains(self, point):
+        return self.fill_path.contains(point) or self.stroke_path.contains(point)
+
+    def collidesWithPath(self, path, mode=Qt.IntersectsItemShape):
+        if mode == Qt.IntersectsItemShape:
+            return self.fill_path.intersects(path) or self.stroke_path.intersects(path)
+        if mode == Qt.ContainsItemShape:
+            return path.contains(self.fill_path) and path.contains(self.stroke_path)
+        return super().collidesWithPath(path, mode)
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged:
@@ -344,6 +369,9 @@ class PartItem(QGraphicsItem):
         if self.show_rapids and not self.rapid_path.isEmpty():
             painter.setPen(cosmetic_pen(COLOR_RAPID, 1.0, Qt.DashLine))
             painter.drawPath(self.rapid_path)
+        if not self.guide_path.isEmpty():
+            painter.setPen(cosmetic_pen(color, 1.0, Qt.DotLine))
+            painter.drawPath(self.guide_path)
         painter.setPen(cosmetic_pen(color, 2.0 if selected else 1.4))
         painter.drawPath(self.cut_path)
 
@@ -409,6 +437,8 @@ class NestView(QGraphicsView):
         self.scale(1, -1)
         self.pan_from = None
         self.rotation_drag = None
+        self.resize_drag = None
+        self.grip_cursor = False
         self.drawing = None
         self.draft = QGraphicsPathItem()
         self.draft.setPen(cosmetic_pen(COLOR_DRAFT, 2.0))
@@ -724,6 +754,74 @@ class NestView(QGraphicsView):
             text = f"Rotating {degrees:+.1f}°"
         self.window_.statusBar().showMessage(text)
 
+    # ------------------------------------------------------------------- resizing
+
+    def grip_at(self, pos):
+        """(part, shape, handle, normal on the sheet) for a drawn figure's outline under the pointer."""
+        scene = self.mapToScene(pos)
+        reach = RESIZE_REACH / abs(self.transform().m11())
+        for part in sorted(self.window_.parts, key=lambda p: not p.isSelected()):
+            shape = part.drawn_shape
+            if shape is None:
+                continue
+            found = shape.grip(part.placement.unmap_point((scene.x(), scene.y())), reach)
+            if found is not None:
+                return part, shape, found[0], part.placement.map_vector(found[1])
+        return None
+
+    @staticmethod
+    def resize_cursor(normal):
+        angle = math.degrees(math.atan2(normal[1], normal[0])) % 180.0
+        if angle < 22.5 or angle >= 157.5:
+            return Qt.SizeHorCursor
+        if angle < 67.5:
+            return Qt.SizeBDiagCursor  # up to the right on the screen, as Y points up
+        if angle < 112.5:
+            return Qt.SizeVerCursor
+        return Qt.SizeFDiagCursor
+
+    def update_grip_cursor(self, pos):
+        found = self.grip_at(pos)
+        if found is not None:
+            self.viewport().setCursor(self.resize_cursor(found[3]))
+            self.grip_cursor = True
+        elif self.grip_cursor:
+            self.viewport().unsetCursor()
+            self.grip_cursor = False
+
+    def begin_resize(self, found):
+        part, shape, handle, _ = found
+        self.scene().clearSelection()
+        part.setSelected(True)
+        self.resize_drag = {"part": part, "shape": shape, "handle": handle, "result": None}
+
+    def continue_resize(self, pos):
+        drag = self.resize_drag
+        placement = drag["part"].placement
+        scene = self.mapToScene(pos)
+        shape = drag["shape"].resized(drag["handle"], placement.unmap_point((scene.x(), scene.y())))
+        path = QPainterPath()
+        try:
+            program = shape.program()
+        except ValueError as error:
+            drag["result"] = None
+            self.draft.setPath(path)
+            self.label.set_text(str(error), scene)
+            return
+        drag["result"] = shape
+        for cut in program.paths:
+            if cut.kind == "cut":
+                path.addPolygon(QPolygonF([QPointF(*placement.map_point(p)) for p in cut.points]))
+        self.draft.setPath(path)
+        self.label.set_text(shape.size_text(), scene)
+
+    def end_resize(self, apply=True):
+        drag, self.resize_drag = self.resize_drag, None
+        self.draft.setPath(QPainterPath())
+        self.label.set_text("", QPointF())
+        if apply and drag["result"] is not None and drag["result"] != drag["shape"]:
+            self.window_.replace_rectangle(drag["part"], drag["result"])
+
     def fit(self):
         rect = self.window_.sheet_item.boundingRect()
         for part in self.window_.parts:
@@ -800,6 +898,12 @@ class NestView(QGraphicsView):
                 self.update_draft(None)
             event.accept()
             return
+        if event.button() == Qt.LeftButton and self.drawing is None:
+            found = self.grip_at(event.pos())
+            if found is not None:
+                self.begin_resize(found)
+                event.accept()
+                return
         if event.button() == Qt.RightButton and self.drawing is None:
             part = self.part_at(event.pos())
             if part is not None:
@@ -814,6 +918,10 @@ class NestView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self.resize_drag is not None:
+            self.continue_resize(event.pos())
+            event.accept()
+            return
         if self.rotation_drag is not None:
             self.continue_rotation(event)
             event.accept()
@@ -839,6 +947,8 @@ class NestView(QGraphicsView):
             event.accept()
             return
         super().mouseMoveEvent(event)
+        if event.buttons() == Qt.NoButton:
+            self.update_grip_cursor(event.pos())  # after Qt has set the cursor of the figure under it
 
     def mouseDoubleClickEvent(self, event):
         if self.drawing is not None and event.button() == Qt.LeftButton:
@@ -849,6 +959,11 @@ class NestView(QGraphicsView):
         super().mouseDoubleClickEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self.resize_drag is not None:
+            if event.button() == Qt.LeftButton:
+                self.end_resize()
+            event.accept()
+            return
         if self.rotation_drag is not None:
             self.rotation_drag = None
             self.unsetCursor()
@@ -872,6 +987,9 @@ class NestView(QGraphicsView):
         self.window_.commit()
 
     def keyPressEvent(self, event):
+        if self.resize_drag is not None and event.key() == Qt.Key_Escape:
+            self.end_resize(apply=False)
+            return
         if self.shape_mode is not None and event.key() == Qt.Key_Escape:
             self.stop_shape()
             return

@@ -140,6 +140,52 @@ class Rectangle:
     def describe_leadin(position):
         return f"{EDGE_NAMES[position[0]]} edge"
 
+    # ------------------------------------------------------------ resizing by dragging
+
+    def grip(self, point, reach):
+        """(handle, outward normal) when a point is within reach of the drawn outline, else None.
+        The handle is the edges to move: one, or two at a corner."""
+        if min(self.width, self.height) < 4 * reach:
+            return None  # too small to tell the edge from the inside: it can only be moved
+        l, b = self.left, self.bottom
+        r, t = l + self.width, b + self.height
+        x, y = point
+        sides = []
+        if b - reach <= y <= t + reach:
+            if abs(x - l) <= reach:
+                sides.append("left")
+            elif abs(x - r) <= reach:
+                sides.append("right")
+        if l - reach <= x <= r + reach:
+            if abs(y - b) <= reach:
+                sides.append("bottom")
+            elif abs(y - t) <= reach:
+                sides.append("top")
+        if not sides:
+            return None
+        nx = -1.0 if "left" in sides else 1.0 if "right" in sides else 0.0
+        ny = -1.0 if "bottom" in sides else 1.0 if "top" in sides else 0.0
+        length = math.hypot(nx, ny)
+        return tuple(sides), (nx / length, ny / length)
+
+    def resized(self, handle, point):
+        """The rectangle with the gripped edges moved to the point, on whole mm. The others stay."""
+        l, b = self.left, self.bottom
+        r, t = l + self.width, b + self.height
+        x, y = round(point[0]), round(point[1])
+        if "left" in handle:
+            l = min(x, r - MIN_SIZE)
+        if "right" in handle:
+            r = max(x, l + MIN_SIZE)
+        if "bottom" in handle:
+            b = min(y, t - MIN_SIZE)
+        if "top" in handle:
+            t = max(y, b + MIN_SIZE)
+        return replace(self, left=float(l), bottom=float(b), width=float(r - l), height=float(t - b))
+
+    def size_text(self):
+        return f"{format_number(self.width)} × {format_number(self.height)} mm"
+
     def nearest_edge(self, point):
         """(edge, fraction, distance in mm) of the drawn edge closest to a point in program coordinates."""
         best = None
@@ -279,6 +325,23 @@ class Circle:
     def describe_leadin(position):
         return f"at {format_number(round(position))}°"
 
+    def grip(self, point, reach):
+        if self.diameter < 4 * reach:
+            return None
+        dx, dy = point[0] - self.cx, point[1] - self.cy
+        distance = math.hypot(dx, dy)
+        if abs(distance - self.diameter / 2) > reach:
+            return None
+        return ("edge",), (dx / distance, dy / distance)
+
+    def resized(self, handle, point):
+        """The circle through the point, on whole mm. The centre stays."""
+        distance = math.hypot(point[0] - self.cx, point[1] - self.cy)
+        return replace(self, diameter=float(max(MIN_SIZE, round(2 * distance))))
+
+    def size_text(self):
+        return f"Ø {format_number(self.diameter)} mm"
+
 
 @dataclass(frozen=True)
 class HoleCircle:
@@ -362,6 +425,38 @@ class HoleCircle:
         return [hole.leadin_segment() for hole in self.hole_shapes()]
 
     describe_leadin = staticmethod(Circle.describe_leadin)
+
+    def grip(self, point, reach):
+        """Any hole's edge sizes all holes. The circle through the hole centres, between the holes,
+        sizes that circle."""
+        centres = self.centres()
+        if self.hole_diameter >= 4 * reach:
+            for index, (x, y) in enumerate(centres):
+                dx, dy = point[0] - x, point[1] - y
+                distance = math.hypot(dx, dy)
+                if abs(distance - self.hole_diameter / 2) <= reach:
+                    return ("hole", index), (dx / distance, dy / distance)
+        if self.diameter < 4 * reach:
+            return None
+        dx, dy = point[0] - self.cx, point[1] - self.cy
+        distance = math.hypot(dx, dy)
+        if abs(distance - self.diameter / 2) > reach:
+            return None
+        if any(math.hypot(point[0] - x, point[1] - y) <= self.hole_diameter / 2 + reach for x, y in centres):
+            return None  # in or at a hole: moving it, or sizing the holes
+        return ("pitch",), (dx / distance, dy / distance)
+
+    def resized(self, handle, point):
+        if handle == ("pitch",):
+            distance = math.hypot(point[0] - self.cx, point[1] - self.cy)
+            return replace(self, diameter=float(max(MIN_SIZE, round(2 * distance))))
+        x, y = self.centres()[handle[1]]
+        distance = math.hypot(point[0] - x, point[1] - y)
+        return replace(self, hole_diameter=float(max(MIN_SIZE, round(2 * distance))))
+
+    def size_text(self):
+        n = format_number
+        return f"Ø {n(self.diameter)} mm, {self.holes} × Ø {n(self.hole_diameter)} mm"
 
 
 HOLE_CIRCLE_HEADER = re.compile(r";PlasmaNest hole circle ([0-9.]+) mm, ([0-9]+) holes")
@@ -527,6 +622,36 @@ class Slot:
     @staticmethod
     def describe_leadin(position):
         return SLOT_SIDES[position[0]]
+
+    def grip(self, point, reach):
+        """A straight side sizes the width, an end the length."""
+        if self.width < 4 * reach:
+            return None
+        a, r = (self.length - self.width) / 2, self.width / 2
+        x, y = point[0] - self.cx, point[1] - self.cy
+        if abs(x) <= a:
+            if abs(abs(y) - r) <= reach:
+                return ("width",), (0.0, 1.0 if y >= 0 else -1.0)
+            return None
+        ex = x - (a if x > 0 else -a)
+        distance = math.hypot(ex, y)
+        if abs(distance - r) > reach:
+            return None
+        return ("right" if x > 0 else "left",), (ex / distance, y / distance)
+
+    def resized(self, handle, point):
+        """Width about the axis; length with the other end staying put. On whole mm."""
+        if handle == ("width",):
+            return replace(self, width=float(max(MIN_SIZE, round(2 * abs(point[1] - self.cy)))))
+        left, right = self.cx - self.length / 2, self.cx + self.length / 2
+        if handle == ("right",):
+            length = max(round(point[0] - left), self.width + MIN_SIZE)
+            return replace(self, cx=left + length / 2, length=float(length))
+        length = max(round(right - point[0]), self.width + MIN_SIZE)
+        return replace(self, cx=right - length / 2, length=float(length))
+
+    def size_text(self):
+        return f"{format_number(self.length)} × {format_number(self.width)} mm"
 
 
 def _apart(a, b):
