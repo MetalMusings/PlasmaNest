@@ -133,6 +133,9 @@ class Rectangle:
         start, point, _ = self.path()
         return start, point
 
+    def leadin_segments(self):
+        return [self.leadin_segment()]
+
     @staticmethod
     def describe_leadin(position):
         return f"{EDGE_NAMES[position[0]]} edge"
@@ -203,7 +206,6 @@ class Circle:
     def gcode(self):
         self.check()
         n = format_number
-        start, point = self.path()
         settings = (f"{PARAMETERS} cx={n(self.cx)} cy={n(self.cy)} diameter={n(self.diameter)} "
                     f"side={'inside' if self.inside else 'outside'} kerf={n(self.kerf)} "
                     f"material={'-' if self.material is None else self.material} leadin={n(self.leadin)} "
@@ -211,18 +213,22 @@ class Circle:
         lines = [f";PlasmaNest circle {n(self.diameter)} mm", settings, "G21 G40 G90"]
         if self.material is not None:
             lines += [f"M190 P{self.material}", "M66 P3 L3 Q1"]
-        lines += ["F#<_hal[plasmac.cut-feed-rate]>", f"G0 X{n(start[0])} Y{n(start[1])}", "M3 $0 S1"]
-        if self.small_hole:
-            lines += self.small_hole_cut(point)
-        else:
-            if self.leadin > 0:
-                lines.append(f"G1 X{n(point[0])} Y{n(point[1])}")
-            # Parts clockwise, holes counter-clockwise, as plasma contours are cut.
-            lines.append(f"{'G3' if self.inside else 'G2'} X{n(point[0])} Y{n(point[1])} "
-                         f"I{n(self.cx - point[0])} J{n(self.cy - point[1])}")
-            lines.append("M5 $0")
-        lines += ["M2", ""]
+        lines += ["F#<_hal[plasmac.cut-feed-rate]>"] + self.cut_lines() + ["M2", ""]
         return "\n".join(lines)
+
+    def cut_lines(self):
+        """From the rapid to the start up to and including M5."""
+        n = format_number
+        start, point = self.path()
+        lines = [f"G0 X{n(start[0])} Y{n(start[1])}", "M3 $0 S1"]
+        if self.small_hole:
+            return lines + self.small_hole_cut(point)
+        if self.leadin > 0:
+            lines.append(f"G1 X{n(point[0])} Y{n(point[1])}")
+        # Parts clockwise, holes counter-clockwise, as plasma contours are cut.
+        lines.append(f"{'G3' if self.inside else 'G2'} X{n(point[0])} Y{n(point[1])} "
+                     f"I{n(self.cx - point[0])} J{n(self.cy - point[1])}")
+        return lines + ["M5 $0"]
 
     def small_hole_cut(self, point):
         """After M3, from the centre: half a circle out to the edge, the hole, and half a circle back in,
@@ -266,9 +272,116 @@ class Circle:
     def leadin_segment(self):
         return self.path()
 
+    def leadin_segments(self):
+        return [self.leadin_segment()]
+
     @staticmethod
     def describe_leadin(position):
         return f"at {format_number(round(position))}°"
+
+
+@dataclass(frozen=True)
+class HoleCircle:
+    """Holes spread evenly around a circle, each cut like a drawn hole (Circle with inside=True),
+    so small holes get the reduced speed and half-circle leads too."""
+    cx: float
+    cy: float
+    diameter: float               # of the circle through the hole centres
+    holes: int = 4
+    hole_diameter: float = 10.0
+    start: float = 0.0            # angle of the first hole, degrees from +X; the rest follow anticlockwise
+    kerf: float = 0.0
+    material: int = None
+    leadin: float = 0.0
+    angle: float = 180.0          # where each hole's lead-in meets it, degrees from +X
+
+    inside = True                 # only holes: never a part of its own
+
+    def centres(self):
+        r = self.diameter / 2
+        return [(self.cx + r * math.cos(math.radians(self.start + 360 * i / self.holes)),
+                 self.cy + r * math.sin(math.radians(self.start + 360 * i / self.holes)))
+                for i in range(self.holes)]
+
+    def hole_shapes(self):
+        return [Circle(x, y, self.hole_diameter, inside=True, kerf=self.kerf, leadin=self.leadin, angle=self.angle)
+                for x, y in self.centres()]
+
+    def check(self):
+        n = format_number
+        if self.holes < 2:
+            raise ValueError("A hole circle needs at least 2 holes.")
+        if self.diameter < MIN_SIZE:
+            raise ValueError(f"The hole circle must be at least {n(MIN_SIZE)} mm in diameter.")
+        self.hole_shapes()[0].check()
+        gap = self.diameter * math.sin(math.pi / self.holes) - self.hole_diameter - self.kerf
+        if gap <= 0:
+            raise ValueError(f"{self.holes} holes of {n(self.hole_diameter)} mm do not fit on "
+                             f"a {n(self.diameter)} mm circle.")
+
+    def gcode(self):
+        self.check()
+        n = format_number
+        settings = (f"{PARAMETERS} cx={n(self.cx)} cy={n(self.cy)} diameter={n(self.diameter)} "
+                    f"holes={self.holes} hole_diameter={n(self.hole_diameter)} start={n(self.start)} "
+                    f"kerf={n(self.kerf)} material={'-' if self.material is None else self.material} "
+                    f"leadin={n(self.leadin)} angle={n(self.angle)}")
+        lines = [f";PlasmaNest hole circle {n(self.diameter)} mm, {self.holes} holes", settings, "G21 G40 G90"]
+        if self.material is not None:
+            lines += [f"M190 P{self.material}", "M66 P3 L3 Q1"]
+        lines.append("F#<_hal[plasmac.cut-feed-rate]>")
+        for hole in self.hole_shapes():
+            lines += hole.cut_lines()
+        lines += ["M2", ""]
+        return "\n".join(lines)
+
+    @property
+    def small_hole(self):
+        return self.hole_shapes()[0].small_hole
+
+    @property
+    def name(self):
+        n = format_number
+        return f"Hole circle Ø{n(self.diameter)}, {self.holes} × Ø{n(self.hole_diameter)}"
+
+    def program(self):
+        return Program(self.name, self.gcode())
+
+    @property
+    def anchor(self):
+        return self.cx, self.cy
+
+    def nearest(self, point):
+        """Lead-in angle and distance for the hole nearest the point: all holes get the same angle."""
+        return min((hole.nearest(point) for hole in self.hole_shapes()), key=lambda found: found[1])
+
+    def with_leadin_at(self, position):
+        return replace(self, angle=position)
+
+    def leadin_segments(self):
+        return [hole.leadin_segment() for hole in self.hole_shapes()]
+
+    describe_leadin = staticmethod(Circle.describe_leadin)
+
+
+HOLE_CIRCLE_HEADER = re.compile(r";PlasmaNest hole circle ([0-9.]+) mm, ([0-9]+) holes")
+
+
+def hole_circle_of(program):
+    """The HoleCircle a program was made from, or None for any other figure."""
+    lines = program.text.lstrip().split("\n")
+    if len(lines) < 2 or not HOLE_CIRCLE_HEADER.match(lines[0]) or not lines[1].startswith(PARAMETERS):
+        return None
+    try:
+        values = dict(word.split("=", 1) for word in lines[1][len(PARAMETERS):].split())
+        shape = HoleCircle(float(values["cx"]), float(values["cy"]), float(values["diameter"]),
+                           holes=int(values["holes"]), hole_diameter=float(values["hole_diameter"]),
+                           start=float(values["start"]), kerf=float(values["kerf"]),
+                           material=None if values["material"] == "-" else int(values["material"]),
+                           leadin=float(values["leadin"]), angle=float(values["angle"]))
+        return shape if shape.gcode() == program.text else None
+    except (KeyError, ValueError):
+        return None
 
 
 CIRCLE_HEADER = re.compile(r";PlasmaNest circle ([0-9.]+) mm")
@@ -291,8 +404,8 @@ def circle_of(program):
 
 
 def shape_of(program):
-    """The Rectangle or Circle a program was made from, or None for loaded G-code."""
-    return rectangle_of(program) or circle_of(program)
+    """The Rectangle, Circle or HoleCircle a program was made from, or None for loaded G-code."""
+    return rectangle_of(program) or circle_of(program) or hole_circle_of(program)
 
 
 def rectangle_program(x0, y0, x1, y1, **settings):

@@ -42,6 +42,7 @@ The files in `samples/` are good for trying it out.
 | Select several | Drag a box on empty space, or Ctrl-click. Several figures rotate as a group. |
 | Draw a rectangle | **Draw rectangle**: a label at the pointer shows X and Y. Press at a corner and drag to the opposite corner, or click both. The label shows width × height. The corners land on whole millimetres, and Esc cancels. Then the exact **Width** and **Height** can be typed in the panel: type the width, press Tab, type the height and press Enter. The first corner stays put. |
 | Draw a circle | **Draw circle**: press at the centre and drag out to the edge, or click the centre and then the edge. The label shows X and Y and then the diameter in whole millimetres. The exact **Diameter** is typed in the panel. |
+| Draw a hole circle | **Draw hole circle**: press at the centre and drag out to the hole centres, or click the centre and then a hole centre. The new hole circle gets the number and size of holes used last (at first 4 × Ø10). |
 | Copy | **Copy…** or Ctrl+D, and give the number. The copies are put in free places. |
 | Delete | **Delete** (selected figures) or **Delete the whole G-code** (all copies of the file). |
 | Cutting order | The list shows the order. Change it with **Cut earlier** and **Cut later**. |
@@ -49,7 +50,8 @@ The files in `samples/` are good for trying it out.
 | View | The mouse wheel zooms, the middle button or a right drag on empty space pans, F fits to the window. |
 
 Figures outside the sheet turn **red** and overlapping figures turn **orange**. A figure inside a
-hole in another does not count as overlapping. The check uses the programmed path, so the kerf is
+hole in another does not count as overlapping, nor do holes drawn in PlasmaNest (holes and hole
+circles) that lie wholly in another figure's material. The check uses the programmed path, so the kerf is
 not included: leave enough distance yourself.
 
 The sheet can have any shape as long as its edges do not cross, for example an offcut with a notch.
@@ -123,21 +125,22 @@ USER_COMMAND_FILE = /home/debian/src/plasmanest/qtplasmac/user_command.py
 - The tab is locked while the machine runs, like QtPlasmaC's other tabs.
 - Unsaved work is saved in `~/.plasmanest/autosave.pnest` when QtPlasmaC closes.
 
-## Rectangles and circles drawn in PlasmaNest
+## Rectangles, circles and hole circles drawn in PlasmaNest
 
-When a rectangle or circle is selected, the panel shows the **Rectangle** or **Circle** box:
+When a drawn figure is selected, the panel shows the **Rectangle**, **Circle** or **Hole circle** box:
 
 | Field | Meaning |
 |---|---|
 | Width, Height, Diameter | The drawn size. |
+| Circle diameter, Holes, Hole diameter, First hole at | For a hole circle: the circle through the hole centres, the number of holes, their size and the angle from +X to the first hole. The holes are spread evenly and cut anticlockwise from the first. |
 | Material | From QtPlasmaC's material file. Chosen with `M190` in the G-code, and the kerf comes from the material. "Active in QtPlasmaC" chooses no material. |
-| Cut | **Outside (part):** the path runs half a kerf outside the drawn size, clockwise. **Inside (hole):** half a kerf inside, counter-clockwise. |
+| Cut | Not shown for a hole circle, which is always holes. **Outside (part):** the path runs half a kerf outside the drawn size, clockwise. **Inside (hole):** half a kerf inside, counter-clockwise. |
 | Kerf | Taken from the material. Typed by hand when no material is chosen. |
 | Lead-in | Length in mm, 0 or more. A straight line square to the edge (radial for circles), starting in the scrap. |
-| Place lead-in | Point at or near the figure and click where the lead-in should be. |
+| Place lead-in | Point at or near the figure and click where the lead-in should be. On a hole circle, point at any hole: all holes get their lead-in at the same angle. |
 
-- The **X** and **Y** fields give the rectangle's drawn corner and the circle's centre, not the
-  path's outer size.
+- The **X** and **Y** fields give the rectangle's drawn corner and the centre of a circle or hole
+  circle, not the path's outer size.
 - Parts are cut clockwise and holes counter-clockwise, circles with G2 and G3.
 - Holes under 30 mm are cut at 60 % of the material's speed. They start at the centre with a half
   circle out to the edge and end with a half circle back in, at most 2 mm long, with the torch on.

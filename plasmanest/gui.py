@@ -6,7 +6,8 @@ import signal
 import sys
 import time
 
-from PyQt5.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, QSize, QSocketNotifier, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import (QEvent, QLocale, QObject, QPoint, QPointF, QRectF, QSize, QSocketNotifier, Qt, QTimer,
+                          pyqtSignal)
 from PyQt5.QtGui import (QBrush, QColor, QFontMetrics, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPainterPathStroker,
                          QPen, QPolygonF, QTransform)
 from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox, QComboBox, QDialog,
@@ -21,7 +22,7 @@ from .gcode import GCodeError, Program, format_number, load_program
 from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
 from .materials import available_materials
 from .theme import qtplasmac_colors, stylesheet
-from .shapes import OVERCUT, SMALL_HOLE, SMALL_HOLE_SPEED, Circle, Rectangle, shape_of
+from .shapes import OVERCUT, SMALL_HOLE, SMALL_HOLE_SPEED, Circle, HoleCircle, Rectangle, shape_of
 
 APP_NAME = "PlasmaNest"
 PART_GAP = 10.0        # mm between figures placed automatically
@@ -94,6 +95,27 @@ def cosmetic_pen(color, width=1.0, style=Qt.SolidLine):
     pen = QPen(color, width, style)
     pen.setCosmetic(True)
     return pen
+
+
+def closed_loops(points, tolerance=1e-3):
+    """(start, end) indexes of the closed contours in a cut path, without the lead-in before or
+    the lead-out after them. A loop ends where the path comes back to a point it passed since the
+    last loop. A path with no loop counts as one, closed from its last point to its first."""
+    loops, seen = [], {}
+    for index, (x, y) in enumerate(points):
+        key = (round(x / tolerance), round(y / tolerance))
+        start = seen.get(key)
+        if start is not None and index - start >= 3:
+            loops.append((start, index))
+            seen = {}
+        seen.setdefault(key, index)
+    return loops or ([(0, len(points) - 1)] if len(points) >= 3 else [])
+
+
+def holes_within(part, region, other):
+    """True for holes drawn in PlasmaNest lying wholly in another figure's material: holes in a part."""
+    shape = shape_of(part.placement.program)
+    return shape is not None and shape.inside and other.contains(region)
 
 
 def plural(count, word):
@@ -230,17 +252,22 @@ class PartItem(QGraphicsItem):
         program = placement.program
         cx, cy = program.center
         self.cut_path = QPainterPath()
-        self.cut_path.setFillRule(Qt.OddEvenFill)
+        self.fill_path = QPainterPath()  # the closed contours: the material, without lead-ins
+        self.fill_path.setFillRule(Qt.OddEvenFill)
         self.rapid_path = QPainterPath()
         for path in program.paths:
-            polygon = QPolygonF([QPointF(x - cx, y - cy) for x, y in path.points])
-            target = self.cut_path if path.kind == "cut" else self.rapid_path
-            target.addPolygon(polygon)
+            points = [QPointF(x - cx, y - cy) for x, y in path.points]
+            if path.kind == "cut":
+                self.cut_path.addPolygon(QPolygonF(points))
+                for start, end in closed_loops(path.points):
+                    self.fill_path.addPolygon(QPolygonF(points[start:end + 1]))
+            else:
+                self.rapid_path.addPolygon(QPolygonF(points))
         self.rect = self.cut_path.boundingRect()
 
         stroker = QPainterPathStroker()
         stroker.setWidth(6.0)
-        self.hit_shape = QPainterPath(self.cut_path)
+        self.hit_shape = QPainterPath(self.fill_path)
         self.hit_shape.addPath(stroker.createStroke(self.cut_path))
 
         self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable
@@ -281,7 +308,7 @@ class PartItem(QGraphicsItem):
         self.update()
 
     def scene_region(self):
-        return self.sceneTransform().map(self.cut_path)
+        return self.sceneTransform().map(self.fill_path)
 
     def on_sheet(self, sheet):
         # A polygon check walks every cut segment, and refresh runs for every figure while dragging.
@@ -313,7 +340,7 @@ class PartItem(QGraphicsItem):
             color = COLOR_SELECTED
         fill = QColor(color)
         fill.setAlpha(70 if selected else 35)
-        painter.fillPath(self.cut_path, fill)
+        painter.fillPath(self.fill_path, fill)
         if self.show_rapids and not self.rapid_path.isEmpty():
             painter.setPen(cosmetic_pen(COLOR_RAPID, 1.0, Qt.DashLine))
             painter.drawPath(self.rapid_path)
@@ -469,6 +496,8 @@ class NestView(QGraphicsView):
         "rectangle": "Press at the first corner and drag to the opposite corner, or click both. Esc cancels.",
         "circle": "Press at the centre and drag out to the edge, or click the centre and then the edge. "
                   "Esc cancels.",
+        "hole circle": "Press at the centre and drag out to the hole centres, or click the centre and then "
+                       "a hole centre. Esc cancels.",
     }
 
     def start_shape(self, kind):
@@ -487,6 +516,9 @@ class NestView(QGraphicsView):
 
     def start_circle(self):
         self.start_shape("circle")
+
+    def start_hole_circle(self):
+        self.start_shape("hole circle")
 
     def stop_shape(self):
         self.shape_mode = None
@@ -519,12 +551,17 @@ class NestView(QGraphicsView):
             return
         x0, y0 = self.shape_start
         path = QPainterPath()
-        if self.shape_mode == "circle":
+        if self.shape_mode in ("circle", "hole circle"):
             diameter = self.circle_diameter(pos)
             path.addEllipse(QPointF(x0, y0), diameter / 2, diameter / 2)
             path.moveTo(x0, y0)
             path.lineTo(self.mapToScene(pos))
             text = f"Ø {format_mm(diameter)} mm"
+            if self.shape_mode == "hole circle":
+                shape = self.window_.new_hole_circle(x0, y0, diameter)
+                for x, y in shape.centres():
+                    path.addEllipse(QPointF(x, y), shape.hole_diameter / 2, shape.hole_diameter / 2)
+                text += f", {shape.holes} × Ø {format_mm(shape.hole_diameter)}"
         else:
             path.addRect(QRectF(QPointF(min(x0, x), min(y0, y)), QPointF(max(x0, x), max(y0, y))))
             text = f"{format_mm(abs(x - x0))} × {format_mm(abs(y - y0))} mm"
@@ -536,6 +573,8 @@ class NestView(QGraphicsView):
         try:
             if self.shape_mode == "circle":
                 shape = self.window_.new_circle(x0, y0, self.circle_diameter(pos))
+            elif self.shape_mode == "hole circle":
+                shape = self.window_.new_hole_circle(x0, y0, self.circle_diameter(pos))
             else:
                 shape = self.window_.new_rectangle(x0, y0, *self.snap(pos))
             program = shape.program()
@@ -579,11 +618,13 @@ class NestView(QGraphicsView):
             return
         placement = self.leadin_part.placement
         shape = shape_of(placement.program)
-        start, point = shape.with_leadin_at(choice).leadin_segment()
-        a, b = placement.map_point(start), placement.map_point(point)
-        path = QPainterPath(QPointF(*a))
-        path.lineTo(QPointF(*b))
-        path.addEllipse(QPointF(*b), 4 / abs(self.transform().m11()), 4 / abs(self.transform().m11()))
+        path = QPainterPath()
+        dot = 4 / abs(self.transform().m11())
+        for start, point in shape.with_leadin_at(choice).leadin_segments():
+            a, b = placement.map_point(start), placement.map_point(point)
+            path.moveTo(QPointF(*a))
+            path.lineTo(QPointF(*b))
+            path.addEllipse(QPointF(*b), dot, dot)
         self.draft.setPath(path)
         self.label.set_text(f"Lead-in: {shape.describe_leadin(choice)}", scene)
 
@@ -611,7 +652,7 @@ class NestView(QGraphicsView):
 
     def shape_release_event(self, event):
         # A drag ends at the release; a click leaves the first point set for a second click.
-        if self.shape_mode in ("rectangle", "circle") and self.shape_start is not None \
+        if self.shape_mode in ("rectangle", "circle", "hole circle") and self.shape_start is not None \
                 and self.shape_press is not None:
             moved = (event.pos() - self.shape_press).manhattanLength()
             self.shape_press = None
@@ -696,6 +737,7 @@ class NestView(QGraphicsView):
             after = self.mapToScene(anchor)
             self.translate(after.x() - before.x(), after.y() - before.y())
             self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+            self.window_.user_has_view = True  # keep this view when figures change
             self.window_.update_handles()
 
     MOUSE_EVENTS = (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseMove,
@@ -770,6 +812,7 @@ class NestView(QGraphicsView):
             self.setTransformationAnchor(QGraphicsView.NoAnchor)
             self.translate(delta.x() / scale, -delta.y() / scale)
             self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+            self.window_.user_has_view = True
             event.accept()
             return
         position = self.mapToScene(event.pos())
@@ -1204,6 +1247,9 @@ class CompactList(QListWidget):
 
 class MainWindow(QMainWindow):
     def __init__(self):
+        # Number fields with a decimal point and no thousands separator, whatever the system's
+        # language. It applies to widgets made from here on.
+        QLocale.setDefault(QLocale.c())
         super().__init__()
         self.parts = []
         self.project_path = None
@@ -1234,6 +1280,7 @@ class MainWindow(QMainWindow):
 
         self.materials = available_materials()
         self.rectangle_defaults = {"inside": False, "material": None, "kerf": 0.0, "leadin": 0.0}
+        self.hole_circle_defaults = {"holes": 4, "hole_diameter": 10.0}
         self._build_panel()
         self._build_actions()
         self.scene_.selectionChanged.connect(self.selection_changed)
@@ -1290,6 +1337,10 @@ class MainWindow(QMainWindow):
         self.circle_shape_button.setToolTip("Press at the centre and drag out to the edge.")
         parts_layout.addLayout(row)
         row = QHBoxLayout()
+        self.hole_circle_shape_button = self._button("Draw hole circle", self.toggle_hole_circle, row)
+        self.hole_circle_shape_button.setToolTip("Press at the centre and drag out to the hole centres.")
+        parts_layout.addLayout(row)
+        row = QHBoxLayout()
         self.conversational_button = self._button("Get from CONVERSATIONAL", self.load_conversational, row)
         self.conversational_button.setToolTip("Adds the shapes accepted in QtPlasmaC's CONVERSATIONAL.")
         self.conversational_button.setVisible(os.path.isdir(os.path.dirname(CONVERSATIONAL_FILE)))
@@ -1343,6 +1394,21 @@ class MainWindow(QMainWindow):
         self.size_d = self._length_spin(1, 100000, 100)
         self.size_d_label = QLabel("Diameter:")
         rect_form.addRow(self.size_d_label, self.size_d)
+        self.hole_count = QSpinBox()
+        self.hole_count.setRange(2, 360)
+        self.hole_count.setKeyboardTracking(False)
+        self.hole_count_label = QLabel("Holes:")
+        rect_form.addRow(self.hole_count_label, self.hole_count)
+        self.hole_d = self._length_spin(1, 100000, 10)
+        self.hole_d_label = QLabel("Hole diameter:")
+        rect_form.addRow(self.hole_d_label, self.hole_d)
+        self.hole_start = QDoubleSpinBox()
+        self.hole_start.setRange(-360, 360)
+        self.hole_start.setDecimals(2)
+        self.hole_start.setSuffix(" °")
+        self.hole_start_label = QLabel("First hole at:")
+        self.hole_start_label.setToolTip("Angle from +X to the first hole. The rest follow anticlockwise.")
+        rect_form.addRow(self.hole_start_label, self.hole_start)
         self.rect_material = QComboBox()
         self.rect_material.addItem("Active in QtPlasmaC", None)
         for material in self.materials:
@@ -1351,7 +1417,8 @@ class MainWindow(QMainWindow):
         self.rect_side = QComboBox()
         self.rect_side.addItem("Outside (part)", False)
         self.rect_side.addItem("Inside (hole)", True)
-        rect_form.addRow("Cut:", self.rect_side)
+        self.rect_side_label = QLabel("Cut:")
+        rect_form.addRow(self.rect_side_label, self.rect_side)
         self.rect_kerf = self._length_spin(0, 20, 0)
         self.rect_kerf.setSuffix(" mm")
         rect_form.addRow("Kerf:", self.rect_kerf)
@@ -1367,8 +1434,10 @@ class MainWindow(QMainWindow):
         self.rect_error.setStyleSheet(f"color: {COLOR_OUTSIDE.name()}; font-weight: bold;")
         self.rect_error.hide()
         rect_form.addRow(self.rect_error)
-        for spin in (self.size_w, self.size_h, self.size_d, self.rect_kerf, self.rect_leadin):
+        for spin in (self.size_w, self.size_h, self.size_d, self.hole_d, self.hole_start, self.rect_kerf,
+                     self.rect_leadin):
             spin.editingFinished.connect(self.rectangle_edited)
+        self.hole_count.valueChanged.connect(lambda value: self.rectangle_edited())
         for combo in (self.rect_material, self.rect_side):
             combo.currentIndexChanged.connect(lambda index: self.rectangle_edited())
         self.rect_box = rect_box
@@ -1526,19 +1595,31 @@ class MainWindow(QMainWindow):
             self.rect_box.setVisible(shape is not None)
             if shape is None:
                 return
-            circle = isinstance(shape, Circle)
-            self.rect_box.setTitle("Circle" if circle else "Rectangle")
+            round_shape = isinstance(shape, (Circle, HoleCircle))
+            hole_circle = isinstance(shape, HoleCircle)
+            self.rect_box.setTitle({Circle: "Circle", HoleCircle: "Hole circle"}.get(type(shape), "Rectangle"))
             for widget in (self.size_w_label, self.size_w, self.size_h_label, self.size_h):
-                widget.setVisible(not circle)
+                widget.setVisible(not round_shape)
             for widget in (self.size_d_label, self.size_d):
-                widget.setVisible(circle)
+                widget.setVisible(round_shape)
+            self.size_d_label.setText("Circle diameter:" if hole_circle else "Diameter:")
+            for widget in (self.hole_count_label, self.hole_count, self.hole_d_label, self.hole_d,
+                           self.hole_start_label, self.hole_start):
+                widget.setVisible(hole_circle)
+            for widget in (self.rect_side_label, self.rect_side):
+                widget.setVisible(not hole_circle)  # only holes
             self._fill_shape_fields(shape)
         finally:
             self.updating_ui = updating
 
     def _fill_shape_fields(self, shape):
-        circle = isinstance(shape, Circle)
-        sizes = ((self.size_d, shape.diameter),) if circle else ((self.size_w, shape.width), (self.size_h, shape.height))
+        if isinstance(shape, HoleCircle):
+            sizes = ((self.size_d, shape.diameter), (self.hole_count, shape.holes), (self.hole_d, shape.hole_diameter),
+                     (self.hole_start, shape.start))
+        elif isinstance(shape, Circle):
+            sizes = ((self.size_d, shape.diameter),)
+        else:
+            sizes = ((self.size_w, shape.width), (self.size_h, shape.height))
         for spin, value in sizes + ((self.rect_kerf, shape.kerf), (self.rect_leadin, shape.leadin)):
             if not spin.hasFocus():
                 spin.setValue(value)
@@ -1549,7 +1630,7 @@ class MainWindow(QMainWindow):
         self.rect_material.setCurrentIndex(index)
         self.rect_side.setCurrentIndex(1 if shape.inside else 0)
         self.rect_kerf.setEnabled(shape.material is None or self.material_kerf(shape.material) is None)
-        small_hole = isinstance(shape, Circle) and shape.small_hole
+        small_hole = isinstance(shape, (Circle, HoleCircle)) and shape.small_hole
         self.rect_leadin.setEnabled(not small_hole)
         self.rect_leadin.setToolTip(
             f"Holes under {format_number(SMALL_HOLE)} mm start at the centre with a half circle, are cut at "
@@ -1572,6 +1653,7 @@ class MainWindow(QMainWindow):
         return placement.bounds()[:2]
 
     POSITION_LABELS = {Rectangle: ("X (drawn corner):", "Y (drawn corner):"), Circle: ("X (centre):", "Y (centre):"),
+                       HoleCircle: ("X (centre):", "Y (centre):"),
                        type(None): ("X (left edge):", "Y (bottom edge):")}
 
     def update_placement_fields(self):
@@ -1606,12 +1688,16 @@ class MainWindow(QMainWindow):
             return  # the fields show another figure's values
         material = self.rect_material.currentData()
         kerf = self.material_kerf(material) if material is not None else None
-        changes = {"material": material, "inside": bool(self.rect_side.currentData()),
-                   "kerf": kerf if kerf is not None else self.rect_kerf.value(), "leadin": self.rect_leadin.value()}
-        if isinstance(shape, Circle):
-            changes["diameter"] = self.size_d.value()
+        changes = {"material": material, "kerf": kerf if kerf is not None else self.rect_kerf.value(),
+                   "leadin": self.rect_leadin.value()}
+        if isinstance(shape, HoleCircle):
+            changes.update(diameter=self.size_d.value(), holes=self.hole_count.value(),
+                           hole_diameter=self.hole_d.value(), start=self.hole_start.value())
+        elif isinstance(shape, Circle):
+            changes.update(diameter=self.size_d.value(), inside=bool(self.rect_side.currentData()))
         else:
-            changes.update(width=self.size_w.value(), height=self.size_h.value())
+            changes.update(width=self.size_w.value(), height=self.size_h.value(),
+                           inside=bool(self.rect_side.currentData()))
         changed = type(shape)(**{**shape.__dict__, **changes})
         if changed == shape:
             self.show_rectangle_fields(shape, part)  # e.g. the kerf field after choosing a material
@@ -1659,7 +1745,12 @@ class MainWindow(QMainWindow):
 
     def remember_rectangle(self, shape):
         """New figures start with the settings used last."""
-        self.rectangle_defaults = {"inside": shape.inside, "material": shape.material,
+        if isinstance(shape, HoleCircle):
+            self.hole_circle_defaults = {"holes": shape.holes, "hole_diameter": shape.hole_diameter}
+            inside = self.rectangle_defaults["inside"]  # a hole circle says nothing about the side
+        else:
+            inside = shape.inside
+        self.rectangle_defaults = {"inside": inside, "material": shape.material,
                                    "kerf": shape.kerf, "leadin": shape.leadin}
 
     def figure_defaults(self):
@@ -1675,6 +1766,11 @@ class MainWindow(QMainWindow):
 
     def new_circle(self, cx, cy, diameter):
         return Circle(cx, cy, diameter, **self.figure_defaults())
+
+    def new_hole_circle(self, cx, cy, diameter):
+        settings = self.figure_defaults()
+        del settings["inside"]
+        return HoleCircle(cx, cy, diameter, **self.hole_circle_defaults, **settings)
 
     def placement_edited(self):
         if self.updating_ui:
@@ -1706,7 +1802,9 @@ class MainWindow(QMainWindow):
         overlapping = set()
         for i, (part_a, rect_a, region_a) in enumerate(regions):
             for part_b, rect_b, region_b in regions[i + 1:]:
-                if rect_a.intersects(rect_b) and region_a.intersects(region_b):
+                if rect_a.intersects(rect_b) and region_a.intersects(region_b) \
+                        and not holes_within(part_b, region_b, region_a) \
+                        and not holes_within(part_a, region_a, region_b):
                     overlapping.add(part_a)
                     overlapping.add(part_b)
         outside = 0
@@ -1992,10 +2090,14 @@ class MainWindow(QMainWindow):
     def toggle_circle(self):
         self.toggle_shape("circle")
 
+    def toggle_hole_circle(self):
+        self.toggle_shape("hole circle")
+
     def update_shape_panel(self):
         mode = self.view.shape_mode
         self.rectangle_shape_button.setText("Cancel rectangle" if mode == "rectangle" else "Draw rectangle")
         self.circle_shape_button.setText("Cancel circle" if mode == "circle" else "Draw circle")
+        self.hole_circle_shape_button.setText("Cancel hole circle" if mode == "hole circle" else "Draw hole circle")
 
     def add_shape(self, program):
         """A figure drawn in PlasmaNest, placed where it was drawn."""
@@ -2005,7 +2107,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"{program.name} mm made. Type exact sizes in the panel if needed.",
                                      10000)
         # Ready for exact numbers: type the width, Tab, the height, Enter (or the diameter, Enter).
-        field = self.size_d if isinstance(shape_of(program), Circle) else self.size_w
+        field = self.size_d if isinstance(shape_of(program), (Circle, HoleCircle)) else self.size_w
         field.setFocus()
         field.selectAll()
         return part

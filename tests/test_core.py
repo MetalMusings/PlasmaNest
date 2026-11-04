@@ -569,3 +569,33 @@ def test_circle_nearest_and_export_through_rotation():
     text = export_gcode([Placement(program, 300, 200, 30)])
     assert "G2 " in text and "I" in text
 
+
+
+def test_hole_circle_cuts_each_hole_like_a_drawn_hole():
+    from plasmanest.shapes import Circle, HoleCircle, shape_of
+    h = HoleCircle(100, 100, 80, holes=6, hole_diameter=13.5, kerf=1.5, material=3, start=90, leadin=2)
+    program = h.program()
+    assert shape_of(program) == h and program.name == "Hole circle Ø80, 6 × Ø13.5"
+    assert program.text.count("M190 P3") == 1 and program.text.count("M3 $0 S1") == 6
+    assert program.text.count("M67 E3 Q60") == 6  # small holes
+    centres = h.centres()
+    assert centres[0] == pytest.approx((100, 140)) and centres[1] == pytest.approx((100 - 40 * math.sqrt(3) / 2, 120))
+    body = program.text.split("F#<_hal[plasmac.cut-feed-rate]>\n", 1)[1]
+    holes = "".join(Circle(x, y, 13.5, inside=True, kerf=1.5, leadin=2).gcode().split(
+        "F#<_hal[plasmac.cut-feed-rate]>\n", 1)[1].replace("M2\n", "") for x, y in centres)
+    assert body == holes + "M2\n"
+    big = HoleCircle(0, 0, 300, holes=3, hole_diameter=40, kerf=1.5, leadin=5).gcode()
+    assert "M67" not in big and big.count("G1 ") == 3
+    assert shape_of(Program("x", program.text.replace("G3 ", "G2 ", 1))) is None
+
+
+def test_impossible_hole_circles_are_refused():
+    from plasmanest.shapes import HoleCircle
+    with pytest.raises(ValueError, match="do not fit"):
+        HoleCircle(0, 0, 40, holes=8, hole_diameter=16).gcode()
+    with pytest.raises(ValueError, match="at least 2"):
+        HoleCircle(0, 0, 40, holes=1).gcode()
+    with pytest.raises(ValueError, match="too small"):
+        HoleCircle(0, 0, 40, hole_diameter=1.2, kerf=1.5).gcode()
+    with pytest.raises(ValueError, match="does not fit in the hole"):
+        HoleCircle(0, 0, 200, hole_diameter=40, kerf=1.5, leadin=30).gcode()

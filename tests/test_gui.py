@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt
-from PyQt5.QtGui import QMouseEvent
+from PyQt5.QtGui import QMouseEvent, QWheelEvent
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QDialog
 
@@ -1150,3 +1150,120 @@ def test_leadin_field_is_disabled_for_small_holes(window):
     assert "centre" in window.rect_leadin.toolTip()
     window.add_shape(Circle(400, 200, 30, inside=True, kerf=1.2).program())
     assert window.rect_leadin.isEnabled() and window.rect_leadin.toolTip() == ""
+
+
+def test_draw_hole_circle_and_change_its_holes(window):
+    from plasmanest.shapes import HoleCircle, shape_of
+    zoom_in(window, 200, 200)
+    window.activateWindow()
+    window.toggle_hole_circle()
+    assert window.hole_circle_shape_button.text() == "Cancel hole circle"
+    mouse(window, QEvent.MouseButtonPress, (200, 200))
+    for x in (210, 230, 250):
+        mouse(window, QEvent.MouseMove, (x, 200), button=Qt.NoButton)
+    assert window.view.label.text == "Ø 100 mm, 4 × Ø 10"
+    mouse(window, QEvent.MouseButtonRelease, (250, 200), buttons=Qt.NoButton)
+    part, = window.parts
+    assert shape_of(part.placement.program) == HoleCircle(200, 200, 100)
+    assert window.rect_box.title() == "Hole circle" and window.size_d_label.text() == "Circle diameter:"
+    assert window.hole_count.isVisibleTo(window) and not window.rect_side.isVisibleTo(window)
+    assert window.pos_x_label.text() == "X (centre):" and window.pos_x.value() == 200
+    assert window.size_d.hasFocus()
+    window.hole_count.setValue(6)
+    window.hole_d.setValue(14)
+    window.hole_d.editingFinished.emit()
+    window.hole_start.setValue(90)
+    window.hole_start.editingFinished.emit()
+    shape = shape_of(window.parts[0].placement.program)
+    assert (shape.holes, shape.hole_diameter, shape.start) == (6, 14, 90)
+    assert shape.centres()[0] == pytest.approx((200, 250))
+    assert not window.rect_leadin.isEnabled()  # small holes
+    # Too many holes for the circle: refused, and the figure stays as it was.
+    window.hole_count.setValue(30)
+    assert "do not fit" in window.rect_error.text() and shape_of(window.parts[0].placement.program) == shape
+    assert window.hole_count.value() == 6
+    # The next hole circle gets the same holes.
+    assert window.new_hole_circle(0, 0, 200).holes == 6 and window.new_hole_circle(0, 0, 200).hole_diameter == 14
+
+
+def test_hole_circle_leadin_is_placed_at_the_nearest_hole_and_used_for_all(window):
+    from plasmanest.shapes import HoleCircle, shape_of
+    zoom_in(window, 200, 200)
+    window.add_shape(HoleCircle(200, 200, 200, holes=4, hole_diameter=40, leadin=5).program())
+    window.place_leadin()
+    mouse(window, QEvent.MouseMove, (300, 222), buttons=Qt.NoButton, button=Qt.NoButton)  # near the hole at 0°
+    assert window.view.leadin_choice == pytest.approx(90)
+    assert window.view.draft.path().elementCount() > 4 * 2  # a lead-in drawn on every hole
+    mouse(window, QEvent.MouseButtonPress, (300, 222))
+    shape = shape_of(window.parts[0].placement.program)
+    assert shape.angle == pytest.approx(90)
+    cuts = [p for p in window.parts[0].placement.program.paths if p.kind == "cut"]
+    assert len(cuts) == 4
+    for cut, (x, y) in zip(cuts, shape.centres()):
+        assert cut.points[0] == pytest.approx((x, y + 15)) and cut.points[1] == pytest.approx((x, y + 20))
+
+
+def test_holes_in_a_part_are_not_overlaps_but_holes_across_its_edge_are(window):
+    from plasmanest.shapes import Circle, HoleCircle, Rectangle
+    window.add_shape(Rectangle(100, 100, 300, 300, kerf=1.5).program())
+    window.add_shape(HoleCircle(250, 250, 200, holes=6, hole_diameter=12, kerf=1.5).program())
+    window.add_shape(Circle(250, 250, 40, inside=True, kerf=1.5).program())
+    window.refresh()
+    assert window.overlap_count == 0
+    window.add_shape(Circle(400, 250, 40, inside=True, kerf=1.5).program())  # across the right edge
+    window.refresh()
+    assert [p.state for p in window.parts] == ["overlap", "ok", "ok", "overlap"]
+    # A part, not a hole, drawn on another part still overlaps.
+    window.delete_selection()
+    window.add_shape(Circle(250, 250, 40, kerf=1.5).program())
+    window.refresh()
+    assert window.overlap_count == 2
+
+
+def test_closed_loops_leave_out_lead_ins_and_lead_outs():
+    from plasmanest.gui import closed_loops
+    square = [(0, 0), (0, 10), (10, 10), (10, 0), (0, 0)]
+    assert closed_loops(square) == [(0, 4)]
+    assert closed_loops([(-5, 0)] + square + [(2, 2)]) == [(1, 5)]
+    # Two contours in one path, and an open path that is filled as before.
+    assert closed_loops(square + [(20, 0), (20, 10), (30, 10), (20, 0)]) == [(0, 4), (5, 8)]
+    assert closed_loops([(0, 0), (0, 10), (10, 10)]) == [(0, 2)]
+    # A tiny hole whose lead-out ends back in the centre, where the lead-in began.
+    hole = [(0, 0), (-0.5, 0.5), (-1, 0), (0, 1), (1, 0), (0, -1), (-1, 0), (-0.5, -0.5), (0, 0)]
+    assert closed_loops(hole) == [(2, 6)]
+
+
+def test_small_holes_are_shaded_whole(window):
+    from plasmanest.shapes import Circle
+    for diameter in (3, 20):
+        part = window.add_shape(Circle(100, 100, diameter, inside=True, kerf=1.5).program())
+        region = part.scene_region()
+        r = (diameter - 1.5) / 2 * 0.9
+        for degrees in range(0, 360, 15):
+            point = QPointF(100 + r * math.cos(math.radians(degrees)), 100 + r * math.sin(math.radians(degrees)))
+            assert region.contains(point), (diameter, degrees)
+
+
+def test_view_stays_put_when_a_figure_changes_after_zooming(window):
+    from plasmanest.shapes import Circle
+    window.add_shape(Circle(200, 200, 60, inside=True, kerf=1.5).program())
+    viewport = window.view.viewport()
+    centre = QPointF(viewport.width() / 2, viewport.height() / 2)
+    QApplication.sendEvent(viewport, QWheelEvent(centre, QPointF(viewport.mapToGlobal(centre.toPoint())),
+                                                 QPoint(), QPoint(0, 240), Qt.NoButton, Qt.NoModifier,
+                                                 Qt.NoScrollPhase, False))
+    before = window.view.transform(), window.view.mapToScene(viewport.rect().center())
+    window.size_d.setValue(40)
+    window.size_d.editingFinished.emit()
+    assert window.parts[0].placement.program.name == "Hole Ø40"
+    assert window.view.transform() == before[0] and window.view.mapToScene(viewport.rect().center()) == before[1]
+
+
+def test_number_fields_use_a_decimal_point(window):
+    from plasmanest.shapes import Circle
+    window.add_shape(Circle(200, 200, 12.5, inside=True, kerf=1.5).program())
+    assert window.size_d.text() == "12.50" and window.sheet_width.text() == "3000.00"
+    window.size_d.lineEdit().selectAll()
+    QTest.keyClicks(window.size_d, "17.25")
+    QTest.keyClick(window.size_d, Qt.Key_Return)
+    assert window.parts[0].placement.program.name == "Hole Ø17.25"
