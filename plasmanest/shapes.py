@@ -384,6 +384,174 @@ def hole_circle_of(program):
         return None
 
 
+SLOT_SIDES = ("top side", "right end", "bottom side", "left end")
+
+
+@dataclass(frozen=True)
+class Slot:
+    """A slot: two half circles joined by straight sides, lying along X. Turn it with the figure's
+    angle. Its length is end to end, so the ends are half circles of the width's diameter."""
+    cx: float
+    cy: float
+    length: float
+    width: float
+    inside: bool = False      # cut as a hole: kerf inwards, counter-clockwise
+    kerf: float = 0.0
+    material: int = None
+    leadin: float = 0.0
+    edge: int = 0             # SLOT_SIDES, in clockwise order
+    at: float = 0.5           # fraction along it, clockwise
+
+    @property
+    def offset(self):
+        return (-1 if self.inside else 1) * self.kerf / 2
+
+    def segments(self, offset=0.0):
+        """(start, end, arc centre or None) of each side, clockwise, moved outwards by offset."""
+        a, r = (self.length - self.width) / 2, self.width / 2 + offset
+        x, y = self.cx, self.cy
+        return [((x - a, y + r), (x + a, y + r), None), ((x + a, y + r), (x + a, y - r), (x + a, y)),
+                ((x + a, y - r), (x - a, y - r), None), ((x - a, y - r), (x - a, y + r), (x - a, y))]
+
+    def point_at(self, edge, at, offset=0.0):
+        """(point, outward normal) at a fraction along a side."""
+        start, end, centre = self.segments(offset)[edge]
+        if centre is None:
+            return ((start[0] + (end[0] - start[0]) * at, start[1] + (end[1] - start[1]) * at),
+                    (0.0, 1.0 if edge == 0 else -1.0))
+        begin = 90.0 if edge == 1 else 270.0
+        angle = math.radians(begin - 180.0 * at)  # clockwise from the top or bottom
+        r = self.width / 2 + offset
+        normal = (math.cos(angle), math.sin(angle))
+        return (centre[0] + r * normal[0], centre[1] + r * normal[1]), normal
+
+    def check(self):
+        n = format_number
+        if self.width < MIN_SIZE:
+            raise ValueError(f"The slot must be at least {n(MIN_SIZE)} mm wide.")
+        if self.length <= self.width:
+            raise ValueError("The slot must be longer than it is wide.")
+        if self.kerf < 0 or self.leadin < 0:
+            raise ValueError("Kerf and lead-in cannot be negative.")
+        if self.inside:
+            if self.width <= self.kerf:
+                raise ValueError(f"The hole is too small for the kerf {n(self.kerf)} mm.")
+            if self.leadin >= self.width - self.kerf:
+                raise ValueError(f"The lead-in {n(self.leadin)} mm does not fit in the hole.")
+        if self.edge not in range(4) or not 0.0 <= self.at <= 1.0:
+            raise ValueError("Invalid place for the lead-in.")
+
+    def path(self):
+        """(lead-in start, cut start)."""
+        point, normal = self.point_at(self.edge, self.at, self.offset)
+        side = -1.0 if self.inside else 1.0  # the lead-in starts in the scrap
+        return (point[0] + side * normal[0] * self.leadin, point[1] + side * normal[1] * self.leadin), point
+
+    def moves(self, point):
+        """(end, arc centre or None, clockwise) from the cut start round to it again: clockwise for a
+        part, counter-clockwise for a hole."""
+        segments = self.segments(self.offset)
+        e = self.edge
+        if not self.inside:
+            pieces = [(point, segments[e][1], segments[e][2])]
+            pieces += [segments[(e + k) % 4] for k in range(1, 4)]
+            pieces.append((segments[e][0], point, segments[e][2]))
+        else:
+            pieces = [(point, segments[e][0], segments[e][2])]
+            pieces += [(segments[(e - k) % 4][1], segments[(e - k) % 4][0], segments[(e - k) % 4][2])
+                       for k in range(1, 4)]
+            pieces.append((segments[e][1], point, segments[e][2]))
+        return [(end, centre, not self.inside) for start, end, centre in pieces if _apart(start, end)]
+
+    def gcode(self):
+        self.check()
+        n = format_number
+        leadin_start, point = self.path()
+        settings = (f"{PARAMETERS} cx={n(self.cx)} cy={n(self.cy)} length={n(self.length)} width={n(self.width)} "
+                    f"side={'inside' if self.inside else 'outside'} kerf={n(self.kerf)} "
+                    f"material={'-' if self.material is None else self.material} leadin={n(self.leadin)} "
+                    f"edge={self.edge} at={n(self.at)}")
+        lines = [f";PlasmaNest slot {n(self.length)} x {n(self.width)} mm", settings, "G21 G40 G90"]
+        if self.material is not None:
+            lines += [f"M190 P{self.material}", "M66 P3 L3 Q1"]
+        lines += ["F#<_hal[plasmac.cut-feed-rate]>", f"G0 X{n(leadin_start[0])} Y{n(leadin_start[1])}", "M3 $0 S1"]
+        if self.leadin > 0:
+            lines.append(f"G1 X{n(point[0])} Y{n(point[1])}")
+        last = point
+        for end, centre, clockwise in self.moves(point):
+            if centre is None:
+                lines.append(f"G1 X{n(end[0])} Y{n(end[1])}")
+            else:
+                lines.append(f"{'G2' if clockwise else 'G3'} X{n(end[0])} Y{n(end[1])} "
+                             f"I{n(centre[0] - last[0])} J{n(centre[1] - last[1])}")
+            last = end
+        lines += ["M5 $0", "M2", ""]
+        return "\n".join(lines)
+
+    @property
+    def name(self):
+        kind = "Slot hole" if self.inside else "Slot"
+        return f"{kind} {format_number(self.length)} × {format_number(self.width)}"
+
+    def program(self):
+        return Program(self.name, self.gcode())
+
+    @property
+    def anchor(self):
+        return self.cx, self.cy
+
+    def nearest(self, point):
+        """((side, fraction), distance in mm) on the drawn outline nearest a point."""
+        a, r = (self.length - self.width) / 2, self.width / 2
+        x, y = point[0] - self.cx, point[1] - self.cy
+        if abs(x) <= a:  # beside a straight side
+            edge = 0 if y >= 0 else 2
+            at = (x + a) / (2 * a) if edge == 0 else (a - x) / (2 * a)
+            return (edge, round(at, 4)), abs(abs(y) - r)
+        edge = 1 if x > 0 else 3
+        ex = x - (a if edge == 1 else -a)
+        begin = 90.0 if edge == 1 else 270.0
+        # Clockwise from the top (right end) or bottom (left end); beyond the end means past its middle.
+        at = min(max(((begin - math.degrees(math.atan2(y, ex))) % 360.0) / 180.0, 0.0), 1.0)
+        return (edge, round(at, 4)), abs(math.hypot(ex, y) - r)
+
+    def with_leadin_at(self, position):
+        return replace(self, edge=position[0], at=position[1])
+
+    def leadin_segment(self):
+        return self.path()
+
+    def leadin_segments(self):
+        return [self.leadin_segment()]
+
+    @staticmethod
+    def describe_leadin(position):
+        return SLOT_SIDES[position[0]]
+
+
+def _apart(a, b):
+    return abs(a[0] - b[0]) > 1e-9 or abs(a[1] - b[1]) > 1e-9
+
+
+SLOT_HEADER = re.compile(r";PlasmaNest slot ([0-9.]+) x ([0-9.]+) mm")
+
+
+def slot_of(program):
+    """The Slot a program was made from, or None for any other figure."""
+    lines = program.text.lstrip().split("\n")
+    if len(lines) < 2 or not SLOT_HEADER.match(lines[0]) or not lines[1].startswith(PARAMETERS):
+        return None
+    try:
+        values = dict(word.split("=", 1) for word in lines[1][len(PARAMETERS):].split())
+        slot = Slot(float(values["cx"]), float(values["cy"]), float(values["length"]), float(values["width"]),
+                    inside=values["side"] == "inside", kerf=float(values["kerf"]),
+                    material=None if values["material"] == "-" else int(values["material"]),
+                    leadin=float(values["leadin"]), edge=int(values["edge"]), at=float(values["at"]))
+        return slot if slot.gcode() == program.text else None
+    except (KeyError, ValueError):
+        return None
+
+
 CIRCLE_HEADER = re.compile(r";PlasmaNest circle ([0-9.]+) mm")
 
 
@@ -404,8 +572,8 @@ def circle_of(program):
 
 
 def shape_of(program):
-    """The Rectangle, Circle or HoleCircle a program was made from, or None for loaded G-code."""
-    return rectangle_of(program) or circle_of(program) or hole_circle_of(program)
+    """The Rectangle, Circle, HoleCircle or Slot a program was made from, or None for loaded G-code."""
+    return rectangle_of(program) or circle_of(program) or hole_circle_of(program) or slot_of(program)
 
 
 def rectangle_program(x0, y0, x1, y1, **settings):

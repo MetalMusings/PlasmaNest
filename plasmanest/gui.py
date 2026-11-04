@@ -22,7 +22,7 @@ from .gcode import GCodeError, Program, format_number, load_program
 from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
 from .materials import available_materials
 from .theme import qtplasmac_colors, stylesheet
-from .shapes import OVERCUT, SMALL_HOLE, SMALL_HOLE_SPEED, Circle, HoleCircle, Rectangle, shape_of
+from .shapes import OVERCUT, SMALL_HOLE, SMALL_HOLE_SPEED, Circle, HoleCircle, Rectangle, Slot, shape_of
 
 APP_NAME = "PlasmaNest"
 PART_GAP = 10.0        # mm between figures placed automatically
@@ -496,6 +496,8 @@ class NestView(QGraphicsView):
         "rectangle": "Press at the first corner and drag to the opposite corner, or click both. Esc cancels.",
         "circle": "Press at the centre and drag out to the edge, or click the centre and then the edge. "
                   "Esc cancels.",
+        "slot": "Press at a corner and drag to the opposite corner, or click both. The slot fills the box "
+                "along its longer side. Esc cancels.",
         "hole circle": "Press at the centre and drag out to the hole centres, or click the centre and then "
                        "a hole centre. Esc cancels.",
     }
@@ -519,6 +521,9 @@ class NestView(QGraphicsView):
 
     def start_hole_circle(self):
         self.start_shape("hole circle")
+
+    def start_slot(self):
+        self.start_shape("slot")
 
     def stop_shape(self):
         self.shape_mode = None
@@ -562,6 +567,11 @@ class NestView(QGraphicsView):
                 for x, y in shape.centres():
                     path.addEllipse(QPointF(x, y), shape.hole_diameter / 2, shape.hole_diameter / 2)
                 text += f", {shape.holes} × Ø {format_mm(shape.hole_diameter)}"
+        elif self.shape_mode == "slot":
+            w, h = abs(x - x0), abs(y - y0)
+            path.addRoundedRect(QRectF(QPointF(min(x0, x), min(y0, y)), QPointF(max(x0, x), max(y0, y))),
+                                min(w, h) / 2, min(w, h) / 2)
+            text = f"{format_mm(max(w, h))} × {format_mm(min(w, h))} mm"
         else:
             path.addRect(QRectF(QPointF(min(x0, x), min(y0, y)), QPointF(max(x0, x), max(y0, y))))
             text = f"{format_mm(abs(x - x0))} × {format_mm(abs(y - y0))} mm"
@@ -570,18 +580,21 @@ class NestView(QGraphicsView):
 
     def finish_shape(self, pos):
         x0, y0 = self.shape_start
+        angle = 0.0
         try:
             if self.shape_mode == "circle":
                 shape = self.window_.new_circle(x0, y0, self.circle_diameter(pos))
             elif self.shape_mode == "hole circle":
                 shape = self.window_.new_hole_circle(x0, y0, self.circle_diameter(pos))
+            elif self.shape_mode == "slot":
+                shape, angle = self.window_.new_slot(x0, y0, *self.snap(pos))
             else:
                 shape = self.window_.new_rectangle(x0, y0, *self.snap(pos))
             program = shape.program()
         except ValueError:
             return False  # too small: keep waiting for the second point
         self.stop_shape()
-        self.window_.add_shape(program)
+        self.window_.add_shape(program, angle)
         return True
 
     def start_leadin(self, part):
@@ -652,7 +665,7 @@ class NestView(QGraphicsView):
 
     def shape_release_event(self, event):
         # A drag ends at the release; a click leaves the first point set for a second click.
-        if self.shape_mode in ("rectangle", "circle", "hole circle") and self.shape_start is not None \
+        if self.shape_mode in ("rectangle", "circle", "hole circle", "slot") and self.shape_start is not None \
                 and self.shape_press is not None:
             moved = (event.pos() - self.shape_press).manhattanLength()
             self.shape_press = None
@@ -1339,6 +1352,8 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.hole_circle_shape_button = self._button("Draw hole circle", self.toggle_hole_circle, row)
         self.hole_circle_shape_button.setToolTip("Press at the centre and drag out to the hole centres.")
+        self.slot_shape_button = self._button("Draw slot", self.toggle_slot, row)
+        self.slot_shape_button.setToolTip("Press at a corner and drag to the opposite corner.")
         parts_layout.addLayout(row)
         row = QHBoxLayout()
         self.conversational_button = self._button("Get from CONVERSATIONAL", self.load_conversational, row)
@@ -1591,13 +1606,18 @@ class MainWindow(QMainWindow):
         updating = self.updating_ui
         self.updating_ui = True
         try:
+            same_part = part is not None and part is getattr(self, "fields_part", None)
             self.fields_part = part if shape is not None else None
             self.rect_box.setVisible(shape is not None)
             if shape is None:
                 return
             round_shape = isinstance(shape, (Circle, HoleCircle))
             hole_circle = isinstance(shape, HoleCircle)
-            self.rect_box.setTitle({Circle: "Circle", HoleCircle: "Hole circle"}.get(type(shape), "Rectangle"))
+            self.rect_box.setTitle({Circle: "Circle", HoleCircle: "Hole circle", Slot: "Slot"}.get(type(shape),
+                                                                                                "Rectangle"))
+            slot = isinstance(shape, Slot)
+            self.size_w_label.setText("Length:" if slot else "Width:")
+            self.size_h_label.setText("Width:" if slot else "Height:")
             for widget in (self.size_w_label, self.size_w, self.size_h_label, self.size_h):
                 widget.setVisible(not round_shape)
             for widget in (self.size_d_label, self.size_d):
@@ -1608,20 +1628,24 @@ class MainWindow(QMainWindow):
                 widget.setVisible(hole_circle)
             for widget in (self.rect_side_label, self.rect_side):
                 widget.setVisible(not hole_circle)  # only holes
-            self._fill_shape_fields(shape)
+            self._fill_shape_fields(shape, keep_typing=same_part)
         finally:
             self.updating_ui = updating
 
-    def _fill_shape_fields(self, shape):
+    def _fill_shape_fields(self, shape, keep_typing=True):
+        """keep_typing: leave a field with the keyboard focus alone, as it may be half typed. Not
+        for another figure, which would otherwise get the old figure's value."""
         if isinstance(shape, HoleCircle):
             sizes = ((self.size_d, shape.diameter), (self.hole_count, shape.holes), (self.hole_d, shape.hole_diameter),
                      (self.hole_start, shape.start))
         elif isinstance(shape, Circle):
             sizes = ((self.size_d, shape.diameter),)
+        elif isinstance(shape, Slot):
+            sizes = ((self.size_w, shape.length), (self.size_h, shape.width))
         else:
             sizes = ((self.size_w, shape.width), (self.size_h, shape.height))
         for spin, value in sizes + ((self.rect_kerf, shape.kerf), (self.rect_leadin, shape.leadin)):
-            if not spin.hasFocus():
+            if not (keep_typing and spin.hasFocus()):
                 spin.setValue(value)
         index = self.rect_material.findData(shape.material)
         if index < 0:  # a material that is not in this machine's file
@@ -1653,7 +1677,7 @@ class MainWindow(QMainWindow):
         return placement.bounds()[:2]
 
     POSITION_LABELS = {Rectangle: ("X (drawn corner):", "Y (drawn corner):"), Circle: ("X (centre):", "Y (centre):"),
-                       HoleCircle: ("X (centre):", "Y (centre):"),
+                       HoleCircle: ("X (centre):", "Y (centre):"), Slot: ("X (centre):", "Y (centre):"),
                        type(None): ("X (left edge):", "Y (bottom edge):")}
 
     def update_placement_fields(self):
@@ -1695,6 +1719,9 @@ class MainWindow(QMainWindow):
                            hole_diameter=self.hole_d.value(), start=self.hole_start.value())
         elif isinstance(shape, Circle):
             changes.update(diameter=self.size_d.value(), inside=bool(self.rect_side.currentData()))
+        elif isinstance(shape, Slot):
+            changes.update(length=self.size_w.value(), width=self.size_h.value(),
+                           inside=bool(self.rect_side.currentData()))
         else:
             changes.update(width=self.size_w.value(), height=self.size_h.value(),
                            inside=bool(self.rect_side.currentData()))
@@ -1766,6 +1793,12 @@ class MainWindow(QMainWindow):
 
     def new_circle(self, cx, cy, diameter):
         return Circle(cx, cy, diameter, **self.figure_defaults())
+
+    def new_slot(self, x0, y0, x1, y1):
+        """The slot filling a drawn box, and the angle that lays it along the box's longer side."""
+        w, h = abs(x1 - x0), abs(y1 - y0)
+        slot = Slot((x0 + x1) / 2, (y0 + y1) / 2, max(w, h), min(w, h), **self.figure_defaults())
+        return slot, (90.0 if h > w else 0.0)
 
     def new_hole_circle(self, cx, cy, diameter):
         settings = self.figure_defaults()
@@ -2093,15 +2126,21 @@ class MainWindow(QMainWindow):
     def toggle_hole_circle(self):
         self.toggle_shape("hole circle")
 
+    def toggle_slot(self):
+        self.toggle_shape("slot")
+
     def update_shape_panel(self):
         mode = self.view.shape_mode
         self.rectangle_shape_button.setText("Cancel rectangle" if mode == "rectangle" else "Draw rectangle")
         self.circle_shape_button.setText("Cancel circle" if mode == "circle" else "Draw circle")
         self.hole_circle_shape_button.setText("Cancel hole circle" if mode == "hole circle" else "Draw hole circle")
+        self.slot_shape_button.setText("Cancel slot" if mode == "slot" else "Draw slot")
 
-    def add_shape(self, program):
-        """A figure drawn in PlasmaNest, placed where it was drawn."""
-        placement = Placement(program, *program.center)
+    def add_shape(self, program, angle=0.0):
+        """A figure drawn in PlasmaNest, placed where it was drawn: turned about its anchor."""
+        anchor = shape_of(program).anchor
+        moved = Placement(program, 0.0, 0.0, angle).map_point(anchor)
+        placement = Placement(program, anchor[0] - moved[0], anchor[1] - moved[1], angle)
         part = self.add_part(placement)
         self.after_change([part])
         self.statusBar().showMessage(f"{program.name} mm made. Type exact sizes in the panel if needed.",

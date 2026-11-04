@@ -599,3 +599,43 @@ def test_impossible_hole_circles_are_refused():
         HoleCircle(0, 0, 40, hole_diameter=1.2, kerf=1.5).gcode()
     with pytest.raises(ValueError, match="does not fit in the hole"):
         HoleCircle(0, 0, 200, hole_diameter=40, kerf=1.5, leadin=30).gcode()
+
+
+def test_slot_is_two_half_circles_and_straight_sides():
+    from plasmanest.shapes import Slot, shape_of
+    s = Slot(100, 50, 80, 20, kerf=1.5, material=3, leadin=3)
+    program = s.program()
+    assert shape_of(program) == s and program.name == "Slot 80 × 20"
+    lines = program.text.split("\n")
+    start = lines.index("M3 $0 S1")
+    # Lead-in from outside to the middle of the top side, then clockwise: right end, bottom, left end.
+    assert lines[start - 1] == "G0 X100 Y63.75"
+    assert lines[start + 1:start + 7] == ["G1 X100 Y60.75", "G1 X130 Y60.75", "G2 X130 Y39.25 I0 J-10.75",
+                                          "G1 X70 Y39.25", "G2 X70 Y60.75 I0 J10.75", "G1 X100 Y60.75"]
+    hole = Slot(100, 50, 80, 20, inside=True, kerf=1.5, leadin=3, edge=1, at=0.5)
+    assert shape_of(hole.program()) == hole and hole.program().name == "Slot hole 80 × 20"
+    text = hole.gcode()
+    # From inside the right end, counter-clockwise: G3 for the ends.
+    assert "G0 X136.25 Y50" in text and "G1 X139.25 Y50" in text
+    assert not re.search(r"^G2 ", text, re.M) and text.count("\nG3 ") == 3
+    cut, = [p for p in hole.program().paths if p.kind == "cut"]
+    for x, y in cut.points[1:]:
+        assert math.hypot(max(abs(x - 100) - 30, 0), y - 50) == pytest.approx(9.25, abs=1e-6)
+
+
+def test_slot_leadin_positions_and_refusals():
+    from plasmanest.shapes import Slot
+    s = Slot(100, 50, 80, 20)
+    assert s.nearest((100, 62)) == ((0, 0.5), pytest.approx(2))
+    assert s.nearest((141, 50)) == ((1, 0.5), pytest.approx(1))
+    assert s.nearest((100, 38)) == ((2, 0.5), pytest.approx(2))
+    assert s.nearest((59, 50)) == ((3, 0.5), pytest.approx(1))
+    for position in ((0, 0.25), (1, 0.2), (1, 0.9), (2, 0.1), (3, 0.7)):
+        point, _ = s.with_leadin_at(position).path()
+        assert s.nearest(point) == (position, pytest.approx(0, abs=1e-9))
+    with pytest.raises(ValueError, match="longer than it is wide"):
+        Slot(0, 0, 20, 20).gcode()
+    with pytest.raises(ValueError, match="does not fit in the hole"):
+        Slot(0, 0, 80, 20, inside=True, kerf=1.5, leadin=19).gcode()
+    with pytest.raises(ValueError, match="too small"):
+        Slot(0, 0, 80, 1.2, inside=True, kerf=1.5).gcode()

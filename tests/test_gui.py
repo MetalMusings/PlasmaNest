@@ -1267,3 +1267,49 @@ def test_number_fields_use_a_decimal_point(window):
     QTest.keyClicks(window.size_d, "17.25")
     QTest.keyClick(window.size_d, Qt.Key_Return)
     assert window.parts[0].placement.program.name == "Hole Ø17.25"
+
+
+def test_draw_slot_lies_along_the_longer_side_of_the_box(window):
+    from plasmanest.shapes import Slot, shape_of
+    zoom_in(window, 200, 200)
+    window.activateWindow()
+    window.toggle_slot()
+    assert window.slot_shape_button.text() == "Cancel slot"
+    mouse(window, QEvent.MouseButtonPress, (190, 160))
+    for y in (180, 220, 240):
+        mouse(window, QEvent.MouseMove, (210, y), button=Qt.NoButton)
+    assert window.view.label.text == "80 × 20 mm"
+    mouse(window, QEvent.MouseButtonRelease, (210, 240), buttons=Qt.NoButton)
+    part, = window.parts
+    assert shape_of(part.placement.program) == Slot(200, 200, 80, 20)
+    assert part.placement.angle == 90 and part.placement.map_point((200, 200)) == pytest.approx((200, 200))
+    assert part.placement.map_point((240, 200)) == pytest.approx((200, 240))  # the right end turned up
+    assert window.rect_box.title() == "Slot" and window.size_w_label.text() == "Length:"
+    assert window.size_h_label.text() == "Width:" and window.rect_side.isVisibleTo(window)
+    assert window.pos_x_label.text() == "X (centre):" and window.pos_x.value() == 200
+    QTest.keyClicks(window.size_w, "100")
+    QTest.keyClick(window.size_w, Qt.Key_Tab)
+    QTest.keyClicks(window.size_h, "30")
+    QTest.keyClick(window.size_h, Qt.Key_Return)
+    part, = window.parts
+    assert part.placement.program.name == "Slot 100 × 30"
+    assert part.placement.map_point((200, 200)) == pytest.approx((200, 200)) and part.placement.angle == 90
+    window.rect_side.setCurrentIndex(1)
+    assert shape_of(window.parts[0].placement.program).inside
+
+
+def test_slot_leadin_is_placed_by_pointing_and_slot_holes_in_a_part_are_fine(window):
+    from plasmanest.shapes import Rectangle, Slot, shape_of
+    zoom_in(window, 200, 200)
+    window.add_shape(Rectangle(100, 100, 200, 200, kerf=1.5).program())
+    window.add_shape(Slot(200, 200, 80, 20, inside=True, kerf=1.5, leadin=4).program())
+    window.refresh()
+    assert window.overlap_count == 0
+    window.place_leadin()
+    mouse(window, QEvent.MouseMove, (238, 200), buttons=Qt.NoButton, button=Qt.NoButton)
+    assert window.view.leadin_choice == (1, 0.5) and "right end" in window.view.label.text
+    mouse(window, QEvent.MouseButtonPress, (238, 200))
+    slot = shape_of(window.parts[1].placement.program)
+    assert (slot.edge, slot.at) == (1, 0.5)
+    cut, = [p for p in window.parts[1].placement.program.paths if p.kind == "cut"]
+    assert cut.points[0] == pytest.approx((235.25, 200)) and cut.points[1] == pytest.approx((239.25, 200))
