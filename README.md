@@ -1,11 +1,11 @@
 # PlasmaNest
 
-Manuell nesting av G-kod för LinuxCNC/QtPlasmaC. Läs in en eller flera G-kodsfiler, placera
-figurerna på en stålplåt och exportera en enda `.ngc`-fil som QtPlasmaC kan köra.
+Manual nesting of G-code for LinuxCNC/QtPlasmaC. Load one or more G-code files, place the figures
+on a steel sheet and export a single `.ngc` file that QtPlasmaC can run.
 
 ## Installation
 
-Kräver Python 3.7 eller senare och PyQt5.
+Needs Python 3.7 or later and PyQt5.
 
 **Windows 11**
 
@@ -13,9 +13,9 @@ Kräver Python 3.7 eller senare och PyQt5.
 python -m pip install -r requirements.txt
 ```
 
-Starta med `start.bat`, eller med `python plasmanest.py`.
+Start with `start.bat`, or with `python plasmanest.py`.
 
-**Debian** (samma paket som QtPlasmaC själv använder)
+**Debian** (the same package QtPlasmaC itself uses)
 
 ```bash
 sudo apt install python3-pyqt5
@@ -25,156 +25,162 @@ sudo apt install python3-pyqt5
 sh start.sh
 ```
 
-Testa gärna med filerna i `samples/`.
+The files in `samples/` are good for trying it out.
 
-## Användning
+## Use
 
-| Vad | Hur |
+| What | How |
 |---|---|
-| Läsa in G-kod | **Läs in…** eller Ctrl+L. Figuren läggs på en ledig plats på plåten. |
-| Rektangulär plåt | Bredd och höjd i panelen. Plåtens nedre vänstra hörn är G-kodens X0 Y0. |
-| Rita plåten | **Rita**, och klicka ut hörnen med musen. Avsluta med dubbelklick, Enter eller klick på första hörnet. Backsteg tar bort senaste hörnet, Esc avbryter och Shift ger raka kanter. Hörnen hamnar på hela millimeter. |
-| Skriva plåtens hörn | **Hörn…** visar hörnen i en tabell, där du kan ändra, lägga till och ta bort dem. Använd den för exakta mått. |
-| Plåt från maskinen | Jogga till plåtens hörn och tryck på användarknappen **Spara punkt** i QtPlasmaC vid varje hörn. Öppna **Från maskinen…** i PlasmaNest, där punkterna dyker upp efter hand i en tabell och en ritning. I ritningen syns kanterna, den senaste punkten och plåten efter marginalen. Välj säkerhetsmarginal och tryck **Använd som plåt**. Se nedan hur knappen läggs in. |
-| Tillbaka till rektangel | **Rektangel** ger en rektangel med polygonens yttermått, med hörnet i X0 Y0. |
-| Flytta | Dra med vänster musknapp, skriv X/Y i panelen, eller använd piltangenterna (1 mm, med Shift 10 mm). |
-| Rotera | Håll höger musknapp på figuren och dra runt den, så följer figuren muspekaren (Ctrl ger steg om 15°). Det går också med den gröna ringen, Shift+mushjul, tangenten R, knapparna i panelen, eller genom att skriva vinkeln. |
-| Markera flera | Dra en ruta på tom yta, eller Ctrl-klicka. Flera figurer roterar som en grupp. |
-| Rita rektangel | **Rita rektangel**: en etikett vid muspekaren visar X och Y. Tryck i ett hörn och dra till motsatta hörnet, eller klicka i båda. Etiketten visar bredd × höjd. Hörnen hamnar på hela millimeter, och Esc avbryter. Därefter kan exakt **Bredd** och **Höjd** skrivas i panelen: skriv bredden, tryck Tab, skriv höjden och tryck Enter. Det första hörnet står still. |
-| Rita cirkel | **Rita cirkel**: tryck i centrum och dra ut till kanten, eller klicka i centrum och vid kanten. Etiketten visar X och Y och sedan diametern i hela millimeter. Exakt **Diameter** skrivs i panelen. |
-| Kopiera | **Kopiera…** eller Ctrl+D, och ange antal. Kopiorna läggs på lediga platser. |
-| Ta bort | **Ta bort** (markerade figurer) eller **Ta bort hela G-koden** (alla kopior av filen). |
-| Skärordning | Listan visar ordningen. Ändra med **Skär tidigare** och **Skär senare**. |
-| Ångra | Ctrl+Z. Gör om med Ctrl+Y (Linux: Ctrl+Shift+Z). |
-| Vy | Mushjul zoomar, mittenknappen eller högerdrag på tom yta panorerar, F anpassar till fönstret. |
+| Load G-code | **Load…** or Ctrl+L. The figure is put in a free place on the sheet. |
+| Rectangular sheet | Width and height in the panel. The sheet's lower left corner is G-code X0 Y0. |
+| Draw the sheet | **Draw**, and click the corners with the mouse. Finish with a double click, Enter or a click on the first corner. Backspace removes the latest corner, Esc cancels and Shift gives straight edges. The corners land on whole millimetres. |
+| Type the sheet's corners | **Corners…** shows the corners in a table, where you can change, add and remove them. Use it for exact sizes. |
+| Sheet from the machine | Jog to the corners of the sheet and press the **save point** user button in QtPlasmaC at each one. Open **From the machine…** in PlasmaNest, where the points appear one by one in a table and a drawing. The drawing shows the edges, the latest point and the sheet after the margin. Choose a safety margin and press **Use as sheet**. See below for how to add the button. |
+| Back to a rectangle | **Rectangle** gives a rectangle with the polygon's outer size, with its corner at X0 Y0. |
+| Move | Drag with the left mouse button, type X/Y in the panel, or use the arrow keys (1 mm, 10 mm with Shift). |
+| Rotate | Hold the right mouse button on the figure and drag around it, and the figure follows the pointer (Ctrl gives 15° steps). The green ring, Shift+mouse wheel, the R key, the buttons in the panel and typing the angle also work. |
+| Select several | Drag a box on empty space, or Ctrl-click. Several figures rotate as a group. |
+| Draw a rectangle | **Draw rectangle**: a label at the pointer shows X and Y. Press at a corner and drag to the opposite corner, or click both. The label shows width × height. The corners land on whole millimetres, and Esc cancels. Then the exact **Width** and **Height** can be typed in the panel: type the width, press Tab, type the height and press Enter. The first corner stays put. |
+| Draw a circle | **Draw circle**: press at the centre and drag out to the edge, or click the centre and then the edge. The label shows X and Y and then the diameter in whole millimetres. The exact **Diameter** is typed in the panel. |
+| Copy | **Copy…** or Ctrl+D, and give the number. The copies are put in free places. |
+| Delete | **Delete** (selected figures) or **Delete the whole G-code** (all copies of the file). |
+| Cutting order | The list shows the order. Change it with **Cut earlier** and **Cut later**. |
+| Undo | Ctrl+Z. Redo with Ctrl+Y (Linux: Ctrl+Shift+Z). |
+| View | The mouse wheel zooms, the middle button or a right drag on empty space pans, F fits to the window. |
 
-Figurer som ligger utanför plåten blir **röda** och figurer som överlappar blir **orange**. Att
-lägga en figur inuti ett hål i en annan räknas inte som överlapp. Kontrollen gäller den
-programmerade banan, så skärspalten (kerf) räknas inte med: lämna själv tillräckligt avstånd.
+Figures outside the sheet turn **red** and overlapping figures turn **orange**. A figure inside a
+hole in another does not count as overlapping. The check uses the programmed path, so the kerf is
+not included: leave enough distance yourself.
 
-Plåten kan ha vilken form som helst så länge kanterna inte korsar varandra, till exempel en
-restbit med urtag. Den behöver inte ligga vid G-kodens X0 Y0, som visas med ett lila kors, men
-hörnens koordinater måste stämma med hur plåten ligger i maskinen. Plåtens form är bara en
-kontroll: den påverkar inte G-koden, och QtPlasmaC känner inte till den.
+The sheet can have any shape as long as its edges do not cross, for example an offcut with a notch.
+It need not lie at G-code X0 Y0, which is shown with a purple cross, but the corners' coordinates
+must match how the sheet lies in the machine. The sheet's shape is only a check: it does not change
+the G-code, and QtPlasmaC does not know about it.
 
-## Spara plåtens hörn från maskinen
+## Saving the sheet's corners from the machine
 
-Lägg in knappen en gång i QtPlasmaC, under **SETTINGS** → **USER BUTTONS** på en ledig rad:
+Add the button once in QtPlasmaC, under **SETTINGS** → **USER BUTTONS** on a free row:
 
 | Name | Code |
 |---|---|
-| `Spara\punkt` | `%/home/debian/src/plasmanest/save_point.py` |
+| `Save\point` | `%/home/debian/src/plasmanest/save_point.py` |
 
-Tryck **Save**, så dyker knappen upp på MAIN-fliken. Ändra sökvägen om PlasmaNest ligger någon annanstans.
+Press **Save**, and the button appears on the MAIN tab. Change the path if PlasmaNest is somewhere
+else.
 
-- Maskinen måste vara referenskörd. Varje tryck sparar en punkt, som syns i PlasmaNest. QtPlasmaC
-  visar bara ett meddelande om punkten inte kunde sparas.
-- Är lasern på (knappen **Laser**) sparas punkten under laserkorset, annars punkten under brännaren.
-  Laserns förskjutning läses från `[LASER_OFFSET]` i QtPlasmaC:s prefs-fil.
-- Punkterna sparas i `~/.plasmanest/points.txt` i **maskinkoordinater**. PlasmaNest räknar om dem
-  med det origo LinuxCNC har när plåten skapas, så det går bra att nollställa origo efter mätningen.
-  Nollställer du origo efter att plåten skapats måste du skapa den igen.
-- Ta hörnen i ordning runt plåten. **Rensa alla** innan en ny plåt mäts upp.
-- Säkerhetsmarginalen flyttar varje kant inåt. Blir formen ogiltig av marginalen vägras plåten.
+- The machine must be homed. Each press saves a point, which shows up in PlasmaNest. QtPlasmaC only
+  shows a message if the point could not be saved.
+- With the laser on (the **Laser** button) the point under the laser cross is saved, otherwise the
+  point under the torch. The laser's offset is read from `[LASER_OFFSET]` in QtPlasmaC's prefs file.
+- The points are saved in `~/.plasmanest/points.txt` in **machine coordinates**. PlasmaNest converts
+  them with the origin LinuxCNC has when the sheet is made, so the origin can be zeroed after
+  measuring. If you zero the origin after the sheet has been made, make the sheet again.
+- Take the corners in order around the sheet. **Clear all** before measuring a new sheet.
+- The safety margin moves each edge inwards. If the margin makes the shape invalid, the sheet is
+  refused.
 
-### Spara punkt från handkontrollen
+### Saving a point from a pendant
 
-En knapp på handkontrollen kan spara punkten på samma sätt. Lägg till en rad sist i
-postgui-HAL-filen (här `custom_postgui.hal`) och starta om LinuxCNC:
+A button on a pendant or gamepad can save the point the same way. Add a line at the end of the
+postgui HAL file (here `custom_postgui.hal`) and restart LinuxCNC:
 
 ```
 loadusr python3 /home/debian/src/plasmanest/point_button.py input.0.btn-start
 ```
 
-Sista ordet är knappens HAL-pinne. `input.0.btn-start` är START på en Logitech F310 via
-`hal_input`. Skriptet läser bara pinnen och kopplar inte om något. Det laddas utan `-W`, så LinuxCNC
-startar även om skriptet saknas. Fel visas i QtPlasmaC.
+The last word is the button's HAL pin. `input.0.btn-start` is START on a Logitech F310 through
+`hal_input`. The script only reads the pin and does not reconnect anything. It is loaded without
+`-W`, so LinuxCNC starts even if the script is missing. Errors are shown in QtPlasmaC.
 
-## Öppna exporten i QtPlasmaC med en knapp
+## Opening the export in QtPlasmaC with a button
 
-På en Linux-dator med `~/linuxcnc/nc_files` föreslår **Exportera** katalogen
-`~/linuxcnc/nc_files/plasmanest/`. Lägg in en knapp i QtPlasmaC under **SETTINGS** → **USER BUTTONS**:
+On a Linux computer with `~/linuxcnc/nc_files`, **Export** suggests the directory
+`~/linuxcnc/nc_files/plasmanest/`. Add a button in QtPlasmaC under **SETTINGS** → **USER BUTTONS**:
 
 | Name | Code |
 |---|---|
-| `Ladda\nest` | `latest-file /home/debian/linuxcnc/nc_files/plasmanest` |
+| `Load\nest` | `latest-file /home/debian/linuxcnc/nc_files/plasmanest` |
 
-Knappen öppnar den senast exporterade `.ngc`-filen i katalogen. Den fungerar bara när maskinen
-står still. Exporterar du till en annan katalog hittar knappen inte filen, och statusraden i
-PlasmaNest påminner om det.
+The button opens the latest exported `.ngc` file in the directory. It only works when the machine
+is idle. If you export to another directory the button does not find the file, and PlasmaNest's
+status bar says so.
 
-## PlasmaNest som flik i QtPlasmaC
+## PlasmaNest as a tab in QtPlasmaC
 
-PlasmaNest kan visas som fliken **PLASMANEST** i QtPlasmaC (2.9). Det är hittills bara provat i
-QtPlasmaC:s simulator. Lägg till under `[DISPLAY]` i INI-filen och starta om LinuxCNC:
+PlasmaNest can be shown as the **PLASMANEST** tab in QtPlasmaC (2.9). So far it has only been tried
+in QtPlasmaC's simulator. Add this under `[DISPLAY]` in the INI file and restart LinuxCNC:
 
 ```
 USER_COMMAND_FILE = /home/debian/src/plasmanest/qtplasmac/user_command.py
 ```
 
-- PlasmaNest startar när fliken väljs första gången och avslutas med QtPlasmaC. Det körs som ett
-  eget program, så ett fel i PlasmaNest påverkar inte QtPlasmaC.
-- När du går från PLASMANEST till MAIN läses nesten in i förhandsvisningen. Det sker bara om den
-  har ändrats och maskinen står still. Figurer utanför plåten, överlapp och materialvarningar ger
-  ett felmeddelande i stället. Kryssrutan **Läs in i QtPlasmaC vid byte till MAIN** stänger av det.
-- Fliken är spärrad medan maskinen kör, som QtPlasmaC:s andra flikar.
-- Osparat arbete sparas i `~/.plasmanest/autosave.pnest` när QtPlasmaC stängs.
+- PlasmaNest starts when the tab is first chosen and ends with QtPlasmaC. It runs as a program of
+  its own, so an error in PlasmaNest does not affect QtPlasmaC.
+- When you go from PLASMANEST to MAIN, the nest is loaded into the preview. That only happens if
+  it has changed and the machine is idle. Figures outside the sheet, overlaps and material warnings
+  give an error message instead. The **Load into QtPlasmaC when going to MAIN** check box turns
+  this off.
+- The tab is locked while the machine runs, like QtPlasmaC's other tabs.
+- Unsaved work is saved in `~/.plasmanest/autosave.pnest` when QtPlasmaC closes.
 
-## Rektanglar och cirklar som ritas i PlasmaNest
+## Rectangles and circles drawn in PlasmaNest
 
-När en rektangel eller cirkel är markerad visar panelen rutan **Rektangel** eller **Cirkel**:
+When a rectangle or circle is selected, the panel shows the **Rectangle** or **Circle** box:
 
-| Fält | Betydelse |
+| Field | Meaning |
 |---|---|
-| Bredd, Höjd, Diameter | De ritade måtten. |
-| Material | Ur QtPlasmaC:s materialfil. Väljs med `M190` i G-koden, och skärspalten hämtas från materialet. "Aktivt i QtPlasmaC" väljer inget material. |
-| Skär | **Utsida (delen):** banan går en halv skärspalt utanför de ritade måtten, medurs. **Insida (hål):** en halv skärspalt innanför, moturs. |
-| Skärspalt | Hämtas från materialet. Skrivs för hand när inget material är valt. |
-| Inledning | Längd i mm, 0 eller mer. En rak linje vinkelrätt mot kanten (radiell för cirklar), med början i spillet. |
-| Placera inledning | Peka på eller nära figuren och klicka där inledningen ska vara. |
+| Width, Height, Diameter | The drawn size. |
+| Material | From QtPlasmaC's material file. Chosen with `M190` in the G-code, and the kerf comes from the material. "Active in QtPlasmaC" chooses no material. |
+| Cut | **Outside (part):** the path runs half a kerf outside the drawn size, clockwise. **Inside (hole):** half a kerf inside, counter-clockwise. |
+| Kerf | Taken from the material. Typed by hand when no material is chosen. |
+| Lead-in | Length in mm, 0 or more. A straight line square to the edge (radial for circles), starting in the scrap. |
+| Place lead-in | Point at or near the figure and click where the lead-in should be. |
 
-- Fälten **X** och **Y** gäller rektangelns ritade hörn och cirkelns centrum, inte banans yttermått.
-- Delar skärs medurs och hål moturs, cirklar med G2 och G3.
-- Små hål får ingen sänkt hastighet eller överbränning.
-- En ny rektangel får samma inställningar som den senast ändrade.
-- Inställningarna sparas i rektangelns G-kod och finns kvar i projektfiler.
-- En omöjlig inställning vägras med ett rött meddelande, till exempel en inledning som inte får
-  plats i hålet.
+- The **X** and **Y** fields give the rectangle's drawn corner and the circle's centre, not the
+  path's outer size.
+- Parts are cut clockwise and holes counter-clockwise, circles with G2 and G3.
+- Holes under 30 mm are cut at 60 % of the material's speed. They start at the centre with a half
+  circle out to the edge and end with a half circle back in, at most 2 mm long, with the torch on.
+  The **Lead-in** field is not used for them.
+- A new figure gets the same settings as the one changed last.
+- The settings are kept in the figure's G-code and stay in project files.
+- An impossible setting is refused with a red message, for example a lead-in that does not fit in
+  the hole.
 
-## Utseende
+## Look
 
-PlasmaNest har QtPlasmaC:s färger, som läses från QtPlasmaC:s inställningar (`[COLOR_OPTIONS]`).
-Ändras färgerna i QtPlasmaC följer PlasmaNest med vid nästa start.
+PlasmaNest has QtPlasmaC's colours, read from QtPlasmaC's settings (`[COLOR_OPTIONS]`). If the
+colours change in QtPlasmaC, PlasmaNest follows at its next start.
 
-## Två sorters filer
+## Two kinds of files
 
-- **Exportera till QtPlasmaC (.ngc)**, Ctrl+E: filen du öppnar i QtPlasmaC och skär med.
-- **Spara projekt (.pnest)**, Ctrl+S: din placering, för att kunna fortsätta arbeta senare. Filen
-  innehåller även G-koden, så den fungerar även om originalfilerna flyttas. QtPlasmaC kan inte läsa den.
+- **Export to QtPlasmaC (.ngc)**, Ctrl+E: the file you open in QtPlasmaC and cut with.
+- **Save project (.pnest)**, Ctrl+S: your placement, to carry on working later. The file also holds
+  the G-code, so it works even if the original files move. QtPlasmaC cannot read it.
 
-## Vad exporten gör med G-koden
+## What the export does to the G-code
 
-- Alla koordinater räknas om till sina slutliga värden, och båg-centrum (I/J) roteras med.
-- Filen blir alltid i millimeter med ett enda programslut (`M2`). Tum-filer räknas om till mm,
-  inklusive numeriska F-värden.
-- R-bågar skrivs om till I/J. `F#<_hal[plasmac.cut-feed-rate]>`, `M3 $n`, `M5 $n`, `M67`, `M68`,
-  `G41.1`/`G42.1` och kommentarer behålls.
-- `M190`/`M66` tas bara med när materialet faktiskt ändras. Materialkommentarer `(o=1…)` och
-  `(o=2…)` flyttas först i filen, eftersom QtPlasmaC kräver det.
-- Rörelser efter sista skärningen (t.ex. parkering) tas bort från varje figur.
+- All coordinates are converted to their final values, and arc centres (I/J) are rotated too.
+- The file is always in millimetres with a single program end (`M2`). Inch files are converted to
+  mm, including numeric F values.
+- R arcs are rewritten as I/J. `F#<_hal[plasmac.cut-feed-rate]>`, `M3 $n`, `M5 $n`, `M67`, `M68`,
+  `G41.1`/`G42.1` and comments are kept.
+- `M190`/`M66` are only written when the material actually changes. Material comments `(o=1…)` and
+  `(o=2…)` are moved to the start of the file, since QtPlasmaC needs that.
+- Moves after the last cut (for example parking) are removed from each figure.
 
-## G-kod som inte går att läsa in
+## G-code that cannot be loaded
 
-Filer som inte kan flyttas säkert vägras med radnummer, i stället för att ge fel skärning:
+Files that cannot be moved safely are refused with a line number, rather than giving a wrong cut:
 
-- `G92`, `G52` och `G10` (förskjutningar)
-- O-ord (underprogram, loopar, villkor)
-- `G18`/`G19`, splines, cykler (`G81` m.fl.) och axlarna A, B, C, U, V, W
-- koordinater som beror på värden bara LinuxCNC känner till, t.ex. `X#<_hal[…]>`
+- `G92`, `G52` and `G10` (offsets)
+- O-words (subroutines, loops, conditions)
+- `G18`/`G19`, splines, cycles (`G81` and others) and the axes A, B, C, U, V, W
+- coordinates that depend on values only LinuxCNC knows, for example `X#<_hal[…]>`
 
-Enkla uttryck och egna parametrar, t.ex. `X[#<w>/2]`, räknas ut och går bra.
+Simple expressions and your own parameters, for example `X[#<w>/2]`, are worked out and are fine.
 
-## Tester
+## Tests
 
 ```bash
 python -m pip install pytest
@@ -184,5 +190,5 @@ python -m pip install pytest
 python -m pytest tests
 ```
 
-På Windows hoppas ett test över i fönsterlöst läge. Det körs med `QT_QPA_PLATFORM=windows` satt,
-och då öppnas riktiga fönster en kort stund.
+On Windows one test is skipped in windowless mode. It runs with `QT_QPA_PLATFORM=windows` set,
+and then real windows open for a moment.

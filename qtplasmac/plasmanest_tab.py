@@ -33,7 +33,7 @@ LOG_FILE = os.path.join(os.path.expanduser("~"), ".plasmanest", "qtplasmac-tab.l
 
 def log(text):
     """QtPlasmaC's stderr is not kept anywhere, so also write to a file of our own."""
-    line = f"PlasmaNest-fliken: {text}"
+    line = f"PlasmaNest tab: {text}"
     print(line, file=sys.stderr, flush=True)
     try:
         import time
@@ -74,7 +74,7 @@ class PlasmaNestTab(QWidget):
         message_layout = QVBoxLayout(self.message_page)
         self.message = QLabel()
         self.message.setWordWrap(True)
-        self.restart = QPushButton("Starta PlasmaNest")
+        self.restart = QPushButton("Start PlasmaNest")
         self.restart.clicked.connect(lambda checked=False: self.start())
         message_layout.addStretch(1)
         message_layout.addWidget(self.message)
@@ -84,7 +84,7 @@ class PlasmaNestTab(QWidget):
         self.pages.addWidget(self.message_page)
         self.start_timer = QTimer(self)
         self.start_timer.setSingleShot(True)
-        self.start_timer.timeout.connect(lambda: self.fail("PlasmaNest svarade inte."))
+        self.start_timer.timeout.connect(lambda: self.fail("PlasmaNest did not answer."))
         self.watch_timer = QTimer(self)
         self.watch_timer.timeout.connect(self.watch)
 
@@ -105,7 +105,7 @@ class PlasmaNestTab(QWidget):
         if self.process is not None:
             return
         try:
-            self.show_message("Startar PlasmaNest…")
+            self.show_message("Starting PlasmaNest…")
             self.buffer = b""
             self.process = subprocess.Popen(self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
             self.notifier = QSocketNotifier(self.process.stdout.fileno(), QSocketNotifier.Read, self)
@@ -113,7 +113,7 @@ class PlasmaNestTab(QWidget):
             self.start_timer.start(self.timeout_ms)
             self.watch_timer.start(WATCH_MS)
         except Exception as error:
-            self.fail(f"Kunde inte starta PlasmaNest: {error}")
+            self.fail(f"Could not start PlasmaNest: {error}")
 
     @guarded
     def read_window_id(self):
@@ -122,7 +122,7 @@ class PlasmaNestTab(QWidget):
         except OSError:
             data = b""
         if not data:
-            self.fail("PlasmaNest avslutades innan det startat.")
+            self.fail("PlasmaNest ended before it had started.")
             return
         self.buffer += data
         if b"\n" not in self.buffer:
@@ -136,13 +136,13 @@ class PlasmaNestTab(QWidget):
             self.pages.addWidget(self.container)
             self.pages.setCurrentWidget(self.container)
         except Exception as error:
-            self.fail(f"Kunde inte visa PlasmaNest: {error}")
+            self.fail(f"Could not show PlasmaNest: {error}")
 
     @guarded
     def watch(self):
         if self.process is not None and self.process.poll() is not None:
             self.cleanup()
-            self.show_message("PlasmaNest har avslutats.", restart=True)
+            self.show_message("PlasmaNest has ended.", restart=True)
 
     @guarded
     def fail(self, text):
@@ -194,7 +194,7 @@ class NestLoader:
 
     def leave_tab(self):
         if not self.machine_idle():
-            log("maskinen står inte still, nesten läses inte in")
+            log("the machine is not idle, the nest is not loaded")
             return "nothing"
         status = live.read(self.directory)
         action, value = live.decide(status, self.last_loaded)
@@ -240,7 +240,7 @@ def install(handler):
         tabs = getattr(handler.w, "main_tab_widget", None)
         if tabs is None:
             # Other QtVCP programs read the same INI file, for example the simulator's panel.
-            log(f"ingen flikrad i {type(handler).__name__}, hoppar över")
+            log(f"no tab bar in {type(handler).__name__}, skipping")
             return None
         tab = PlasmaNestTab()
 
@@ -296,7 +296,7 @@ def install(handler):
                 if pin is None or widget is None:
                     continue
                 if (tabs.indexOf(widget) >= 0) == bool(pin.get()):
-                    log(f"flikarna stämmer inte med {pin_name}, bygger om dem")
+                    log(f"the tabs do not match {pin_name}, rebuilding them")
                     handler.disable_tabs()
                     return
 
@@ -305,13 +305,13 @@ def install(handler):
             ensure_tab()
             # After QtPlasmaC's own slot, if it is connected yet.
             QTimer.singleShot(0, reconcile)
-            log(f"{name} = {value}, flikar: {titles()}")
+            log(f"{name} = {value}, tabs: {titles()}")
 
         for name in ("convTabDisable", "paramTabDisable", "settingsTabDisable"):
             pin = getattr(handler, name, None)
             if pin is not None:
                 pin.value_changed.connect(lambda value, name=name: pin_changed(name, value))
-        log(f"installerad, flikar: {titles()}")
+        log(f"installed, tabs: {titles()}")
 
         loader = NestLoader(handler)
         previous = [tabs.currentWidget()]

@@ -96,6 +96,10 @@ def cosmetic_pen(color, width=1.0, style=Qt.SolidLine):
     return pen
 
 
+def plural(count, word):
+    return f"{count} {word}" + ("" if count == 1 else "s")
+
+
 def format_mm(value):
     return f"{value:.0f}" if abs(value - round(value)) < 1e-9 else f"{value:.1f}"
 
@@ -156,7 +160,7 @@ class OriginItem(QGraphicsItem):
         super().__init__()
         self.setFlag(QGraphicsItem.ItemIgnoresTransformations)
         self.setAcceptedMouseButtons(Qt.NoButton)
-        self.setToolTip("G-kodens X0 Y0")
+        self.setToolTip("G-code X0 Y0")
         self.setZValue(-5)
 
     def boundingRect(self):
@@ -178,7 +182,7 @@ class RotateHandle(QGraphicsItem):
         self.part = part
         self.setFlag(QGraphicsItem.ItemIgnoresTransformations)
         self.setCursor(Qt.CrossCursor)
-        self.setToolTip("Dra för att rotera. Håll Ctrl för steg om 15°.")
+        self.setToolTip("Drag to rotate. Hold Ctrl for 15° steps.")
         self.setZValue(5)
         self.grab_angle = 0.0
         self.start_angle = 0.0
@@ -462,9 +466,9 @@ class NestView(QGraphicsView):
     # -------------------------------------------------------------- new figures
 
     SHAPE_HELP = {
-        "rectangle": "Tryck i första hörnet och dra till motsatta hörnet, eller klicka i båda. Esc avbryter.",
-        "circle": "Tryck i centrum och dra ut till kanten, eller klicka i centrum och sedan vid kanten. "
-                  "Esc avbryter.",
+        "rectangle": "Press at the first corner and drag to the opposite corner, or click both. Esc cancels.",
+        "circle": "Press at the centre and drag out to the edge, or click the centre and then the edge. "
+                  "Esc cancels.",
     }
 
     def start_shape(self, kind):
@@ -549,8 +553,8 @@ class NestView(QGraphicsView):
         self.leadin_choice = None
         self.setCursor(Qt.CrossCursor)
         self.setFocus()
-        self.window_.statusBar().showMessage("Peka på eller nära figuren och klicka där inledningen ska vara. "
-                                             "Esc avbryter.")
+        self.window_.statusBar().showMessage("Point at or near the figure and click where the lead-in should be. "
+                                             "Esc cancels.")
         self.window_.update_shape_panel()
 
     LEADIN_REACH = 30  # pixels from the outline that still count as pointing at it
@@ -571,7 +575,7 @@ class NestView(QGraphicsView):
         scene = self.mapToScene(pos)
         if choice is None:
             self.draft.setPath(QPainterPath())
-            self.label.set_text("Peka närmare figuren", scene)
+            self.label.set_text("Point closer to the figure", scene)
             return
         placement = self.leadin_part.placement
         shape = shape_of(placement.program)
@@ -581,7 +585,7 @@ class NestView(QGraphicsView):
         path.lineTo(QPointF(*b))
         path.addEllipse(QPointF(*b), 4 / abs(self.transform().m11()), 4 / abs(self.transform().m11()))
         self.draft.setPath(path)
-        self.label.set_text(f"Inledning: {shape.describe_leadin(choice)}", scene)
+        self.label.set_text(f"Lead-in: {shape.describe_leadin(choice)}", scene)
 
     def finish_leadin(self):
         part, choice = self.leadin_part, self.leadin_choice
@@ -661,9 +665,9 @@ class NestView(QGraphicsView):
         self.window_.rotate_parts(drag["originals"], drag["pivot"], degrees)
         self.window_.schedule_refresh()
         if len(drag["originals"]) == 1:
-            text = f"Vinkel {drag['originals'][0][0].placement.angle:.1f}°"
+            text = f"Angle {drag['originals'][0][0].placement.angle:.1f}°"
         else:
-            text = f"Roterar {degrees:+.1f}°"
+            text = f"Rotating {degrees:+.1f}°"
         self.window_.statusBar().showMessage(text)
 
     def fit(self):
@@ -833,12 +837,12 @@ class NestView(QGraphicsView):
 class CopyDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
-        self.setWindowTitle("Kopiera figur")
+        self.setWindowTitle("Copy figure")
         self.count = QSpinBox()
         self.count.setRange(1, 500)
         self.count.setValue(1)
         form = QFormLayout(self)
-        form.addRow("Antal kopior:", self.count)
+        form.addRow("Number of copies:", self.count)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -850,16 +854,16 @@ class CornerDialog(QDialog):
 
     def __init__(self, parent, corners):
         super().__init__(parent)
-        self.setWindowTitle("Plåtens hörn")
+        self.setWindowTitle("Sheet corners")
         self.sheet = None
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["X (mm)", "Y (mm)"])
         self.table.horizontalHeader().setStretchLastSection(True)
         for corner in corners:
             self.add_row(self.table.rowCount(), corner)
-        add_button = QPushButton("Lägg till hörn")
+        add_button = QPushButton("Add corner")
         add_button.clicked.connect(lambda checked=False: self.add_after_selected())
-        remove_button = QPushButton("Ta bort hörn")
+        remove_button = QPushButton("Remove corner")
         remove_button.clicked.connect(lambda checked=False: self.remove_selected())
         row = QHBoxLayout()
         row.addWidget(add_button)
@@ -871,7 +875,7 @@ class CornerDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Ange hörnen i ordning runt plåten."))
+        layout.addWidget(QLabel("Enter the corners in order around the sheet."))
         layout.addWidget(self.table)
         layout.addLayout(row)
         layout.addWidget(self.error)
@@ -903,9 +907,9 @@ class CornerDialog(QDialog):
                 try:
                     value = float(text)
                 except ValueError:
-                    raise ValueError(f"Rad {row + 1}: \"{text}\" är inget tal.")
+                    raise ValueError(f"Row {row + 1}: \"{text}\" is not a number.")
                 if not math.isfinite(value):
-                    raise ValueError(f"Rad {row + 1}: \"{text}\" är inget tal.")
+                    raise ValueError(f"Row {row + 1}: \"{text}\" is not a number.")
                 values.append(value)
             result.append(tuple(values))
         return result
@@ -966,7 +970,7 @@ class PointsPreview(QWidget):
         if not self.corners:
             painter.setPen(QPen(COLOR_VIEW))
             painter.drawText(self.rect(), Qt.AlignCenter | Qt.TextWordWrap,
-                             "Inga punkter än.\nSpara första hörnet i QtPlasmaC.")
+                             "No points yet.\nSave the first corner in QtPlasmaC.")
             return
         transform = self.transform()
         pixels = [self.to_pixels(c, transform) for c in self.corners]
@@ -1021,13 +1025,13 @@ class PointsPreview(QWidget):
 
 
 class MachineDialog(QDialog):
-    """Sheet corners saved from QtPlasmaC with the Spara punkt button, live as they arrive."""
+    """Sheet corners saved from QtPlasmaC with the save point user button, live as they arrive."""
 
     POLL_MS = 500
 
     def __init__(self, parent, path=machine.POINTS_FILE, offsets=machine.current_offsets):
         super().__init__(parent)
-        self.setWindowTitle("Plåt från maskinen")
+        self.setWindowTitle("Sheet from the machine")
         self.path = path
         self.read_offsets = offsets
         self.points = []
@@ -1036,11 +1040,11 @@ class MachineDialog(QDialog):
         self.error = None
         self.sheet = None
 
-        intro = QLabel("Jogga till plåtens hörn i ordning runt plåten och tryck <b>Spara punkt</b> i "
-                       "QtPlasmaC vid varje hörn. Med lasern på sparas punkten under lasern.")
+        intro = QLabel("Jog to the corners of the sheet in order around it and press the <b>save point</b> user "
+                       "button in QtPlasmaC at each one. With the laser on, the point under the laser is saved.")
         intro.setWordWrap(True)
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["X (mm)", "Y (mm)", "Sikte", "Sparad"])
+        self.table.setHorizontalHeaderLabels(["X (mm)", "Y (mm)", "Pointer", "Saved"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -1054,11 +1058,11 @@ class MachineDialog(QDialog):
         self.margin.setSuffix(" mm")
         self.margin.valueChanged.connect(lambda value: self.update_result())
         margin_row = QHBoxLayout()
-        margin_row.addWidget(QLabel("Säkerhetsmarginal från kanten:"))
+        margin_row.addWidget(QLabel("Safety margin from the edge:"))
         margin_row.addWidget(self.margin)
-        remove_button = QPushButton("Ta bort punkt")
+        remove_button = QPushButton("Remove point")
         remove_button.clicked.connect(lambda checked=False: self.remove_selected())
-        clear_button = QPushButton("Rensa alla")
+        clear_button = QPushButton("Clear all")
         clear_button.clicked.connect(lambda checked=False: self.clear())
         row = QHBoxLayout()
         row.addWidget(remove_button)
@@ -1066,14 +1070,14 @@ class MachineDialog(QDialog):
         self.result = QLabel()
         self.result.setWordWrap(True)
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.buttons.button(QDialogButtonBox.Ok).setText("Använd som plåt")
+        self.buttons.button(QDialogButtonBox.Ok).setText("Use as sheet")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         self.preview = PointsPreview()
         self.preview.pointClicked.connect(lambda index: self.table.setCurrentCell(index, 0))
         self.table.currentCellChanged.connect(lambda *args: self.update_preview())
-        legend = QLabel(f"<span style='color:{COLOR_DRAFT.name()}'>●</span> senaste punkten &nbsp; "
-                        f"<span style='color:{COLOR_SELECTED.name()}'>▨</span> plåt efter marginalen")
+        legend = QLabel(f"<span style='color:{COLOR_DRAFT.name()}'>●</span> latest point &nbsp; "
+                        f"<span style='color:{COLOR_SELECTED.name()}'>▨</span> sheet after the margin")
         controls = QVBoxLayout()
         controls.addWidget(intro)
         controls.addWidget(self.table)
@@ -1131,11 +1135,11 @@ class MachineDialog(QDialog):
         if 0 <= selected < self.table.rowCount():
             self.table.setCurrentCell(selected, 0)
         if self.offsets is None:
-            self.coordinates.setText("LinuxCNC svarar inte. Punkterna visas med det origo som gällde när "
-                                     "de sparades.")
+            self.coordinates.setText("LinuxCNC is not answering. The points are shown with the origin that applied when "
+                                     "they were saved.")
         else:
             o = self.offsets
-            text = f"Arbetskoordinater i {o.name} med nuvarande origo (X {o.g5x[0]:.2f} Y {o.g5x[1]:.2f}"
+            text = f"Work coordinates in {o.name} with the current origin (X {o.g5x[0]:.2f} Y {o.g5x[1]:.2f}"
             if o.rotation:
                 text += f", rotation {o.rotation:.3f}°"
             if any(o.g92):
@@ -1148,7 +1152,7 @@ class MachineDialog(QDialog):
         if self.error:
             message = self.error
         elif len(self.points) < 3:
-            message = f"{len(self.points)} punkter sparade. Det behövs minst tre."
+            message = f"{plural(len(self.points), 'point')} saved. At least three are needed."
         else:
             try:
                 self.sheet = Sheet(self.corners()).inset(self.margin.value())
@@ -1161,8 +1165,8 @@ class MachineDialog(QDialog):
         else:
             s = self.sheet
             self.result.setStyleSheet("")
-            self.result.setText(f"Plåt med {len(s.corners)} hörn, {s.width:.1f} × {s.height:.1f} mm, "
-                                f"{s.area / 1e6:.2f} m² efter marginalen.")
+            self.result.setText(f"Sheet with {len(s.corners)} corners, {s.width:.1f} × {s.height:.1f} mm, "
+                                f"{s.area / 1e6:.2f} m² after the margin.")
         self.buttons.button(QDialogButtonBox.Ok).setEnabled(self.sheet is not None)
         self.update_preview()
 
@@ -1173,7 +1177,7 @@ class MachineDialog(QDialog):
         try:
             machine.write_points(points, self.path)
         except OSError as error:
-            QMessageBox.warning(self, APP_NAME, f"Kunde inte skriva punktfilen:\n{error}")
+            QMessageBox.warning(self, APP_NAME, f"Could not write the points file:\n{error}")
         self.file_state = False  # read it back even if the size and time look the same
         self.poll()
 
@@ -1233,7 +1237,7 @@ class MainWindow(QMainWindow):
         self._build_panel()
         self._build_actions()
         self.scene_.selectionChanged.connect(self.selection_changed)
-        self.statusBar().showMessage("Läs in en G-kodsfil för att börja.")
+        self.statusBar().showMessage("Load a G-code file to begin.")
         self.resize(1280, 800)
         self.commit()
         self.saved_state = self.undo_stack[-1]
@@ -1247,21 +1251,21 @@ class MainWindow(QMainWindow):
         panel.setMaximumWidth(340)
         layout = QVBoxLayout(panel)
 
-        sheet_box = QGroupBox("Stålplåt (mm)")
+        sheet_box = QGroupBox("Steel sheet (mm)")
         sheet_form = QFormLayout(sheet_box)
         self.sheet_width = self._length_spin(1, 100000, self.sheet.width)
         self.sheet_height = self._length_spin(1, 100000, self.sheet.height)
         self.sheet_width.editingFinished.connect(self.sheet_changed)
         self.sheet_height.editingFinished.connect(self.sheet_changed)
-        sheet_form.addRow("Bredd (X):", self.sheet_width)
-        sheet_form.addRow("Höjd (Y):", self.sheet_height)
+        sheet_form.addRow("Width (X):", self.sheet_width)
+        sheet_form.addRow("Height (Y):", self.sheet_height)
         row = QHBoxLayout()
-        self.draw_button = self._button("Rita", self.toggle_drawing, row)
-        self.corners_button = self._button("Hörn…", self.edit_corners, row)
-        self.rectangle_button = self._button("Rektangel", self.make_rectangle, row)
+        self.draw_button = self._button("Draw", self.toggle_drawing, row)
+        self.corners_button = self._button("Corners…", self.edit_corners, row)
+        self.rectangle_button = self._button("Rectangle", self.make_rectangle, row)
         sheet_form.addRow(row)
         row = QHBoxLayout()
-        self.machine_button = self._button("Från maskinen…", self.sheet_from_machine, row)
+        self.machine_button = self._button("From the machine…", self.sheet_from_machine, row)
         sheet_form.addRow(row)
         self.sheet_info = QLabel()
         self.sheet_info.setWordWrap(True)
@@ -1269,38 +1273,38 @@ class MainWindow(QMainWindow):
         layout.addWidget(sheet_box)
         self.update_sheet_panel()
 
-        parts_box = QGroupBox("Figurer (i skärordning)")
+        parts_box = QGroupBox("Figures (in cutting order)")
         parts_layout = QVBoxLayout(parts_box)
         self.part_list = CompactList()
         self.part_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.part_list.itemSelectionChanged.connect(self.list_selection_changed)
         parts_layout.addWidget(self.part_list)
         row = QHBoxLayout()
-        self.load_button = self._button("Läs in…", self.load_files, row)
-        self.copy_button = self._button("Kopiera…", self.copy_selection, row)
+        self.load_button = self._button("Load…", self.load_files, row)
+        self.copy_button = self._button("Copy…", self.copy_selection, row)
         parts_layout.addLayout(row)
         row = QHBoxLayout()
-        self.rectangle_shape_button = self._button("Rita rektangel", self.toggle_rectangle, row)
-        self.rectangle_shape_button.setToolTip("Tryck i ett hörn och dra till motsatta hörnet.")
-        self.circle_shape_button = self._button("Rita cirkel", self.toggle_circle, row)
-        self.circle_shape_button.setToolTip("Tryck i centrum och dra ut till kanten.")
+        self.rectangle_shape_button = self._button("Draw rectangle", self.toggle_rectangle, row)
+        self.rectangle_shape_button.setToolTip("Press at a corner and drag to the opposite corner.")
+        self.circle_shape_button = self._button("Draw circle", self.toggle_circle, row)
+        self.circle_shape_button.setToolTip("Press at the centre and drag out to the edge.")
         parts_layout.addLayout(row)
         row = QHBoxLayout()
-        self.conversational_button = self._button("Hämta från CONVERSATIONAL", self.load_conversational, row)
-        self.conversational_button.setToolTip("Lägger till figurerna som godkänts i QtPlasmaC:s CONVERSATIONAL.")
+        self.conversational_button = self._button("Get from CONVERSATIONAL", self.load_conversational, row)
+        self.conversational_button.setToolTip("Adds the shapes accepted in QtPlasmaC's CONVERSATIONAL.")
         self.conversational_button.setVisible(os.path.isdir(os.path.dirname(CONVERSATIONAL_FILE)))
         parts_layout.addLayout(row)
         row = QHBoxLayout()
-        self.delete_button = self._button("Ta bort", self.delete_selection, row)
-        self.delete_all_button = self._button("Ta bort hela G-koden", self.delete_programs, row)
+        self.delete_button = self._button("Delete", self.delete_selection, row)
+        self.delete_all_button = self._button("Delete the whole G-code", self.delete_programs, row)
         parts_layout.addLayout(row)
         row = QHBoxLayout()
-        self.up_button = self._button("Skär tidigare", lambda: self.reorder(-1), row)
-        self.down_button = self._button("Skär senare", lambda: self.reorder(1), row)
+        self.up_button = self._button("Cut earlier", lambda: self.reorder(-1), row)
+        self.down_button = self._button("Cut later", lambda: self.reorder(1), row)
         parts_layout.addLayout(row)
         layout.addWidget(parts_box, 1)
 
-        place_box = QGroupBox("Placering")
+        place_box = QGroupBox("Placement")
         place_form = QFormLayout(place_box)
         self.pos_x = self._length_spin(-100000, 100000, 0)
         self.pos_y = self._length_spin(-100000, 100000, 0)
@@ -1312,10 +1316,10 @@ class MainWindow(QMainWindow):
         self.pos_x.valueChanged.connect(self.placement_edited)
         self.pos_y.valueChanged.connect(self.placement_edited)
         self.angle.valueChanged.connect(self.placement_edited)
-        self.pos_x_label, self.pos_y_label = QLabel("X (vänster kant):"), QLabel("Y (nedre kant):")
+        self.pos_x_label, self.pos_y_label = QLabel("X (left edge):"), QLabel("Y (bottom edge):")
         place_form.addRow(self.pos_x_label, self.pos_x)
         place_form.addRow(self.pos_y_label, self.pos_y)
-        place_form.addRow("Vinkel:", self.angle)
+        place_form.addRow("Angle:", self.angle)
         row = QHBoxLayout()
         self.rotate_step = QDoubleSpinBox()
         self.rotate_step.setRange(0.01, 180)
@@ -1324,38 +1328,38 @@ class MainWindow(QMainWindow):
         self.rotate_ccw = self._button("↺", lambda: self.rotate_selection(self.rotate_step.value()), row)
         self.rotate_cw = self._button("↻", lambda: self.rotate_selection(-self.rotate_step.value()), row)
         row.addWidget(self.rotate_step)
-        place_form.addRow("Rotera:", row)
+        place_form.addRow("Rotate:", row)
         self.place_box = place_box
         layout.addWidget(place_box)
 
         # Only for one selected rectangle drawn in PlasmaNest.
-        rect_box = QGroupBox("Rektangel")
+        rect_box = QGroupBox("Rectangle")
         rect_form = QFormLayout(rect_box)
         self.size_w = self._length_spin(1, 100000, 100)
         self.size_h = self._length_spin(1, 100000, 100)
-        self.size_w_label, self.size_h_label = QLabel("Bredd:"), QLabel("Höjd:")
+        self.size_w_label, self.size_h_label = QLabel("Width:"), QLabel("Height:")
         rect_form.addRow(self.size_w_label, self.size_w)
         rect_form.addRow(self.size_h_label, self.size_h)
         self.size_d = self._length_spin(1, 100000, 100)
         self.size_d_label = QLabel("Diameter:")
         rect_form.addRow(self.size_d_label, self.size_d)
         self.rect_material = QComboBox()
-        self.rect_material.addItem("Aktivt i QtPlasmaC", None)
+        self.rect_material.addItem("Active in QtPlasmaC", None)
         for material in self.materials:
             self.rect_material.addItem(f"{material.number}: {material.name}", material.number)
         rect_form.addRow("Material:", self.rect_material)
         self.rect_side = QComboBox()
-        self.rect_side.addItem("Utsida (delen)", False)
-        self.rect_side.addItem("Insida (hål)", True)
-        rect_form.addRow("Skär:", self.rect_side)
+        self.rect_side.addItem("Outside (part)", False)
+        self.rect_side.addItem("Inside (hole)", True)
+        rect_form.addRow("Cut:", self.rect_side)
         self.rect_kerf = self._length_spin(0, 20, 0)
         self.rect_kerf.setSuffix(" mm")
-        rect_form.addRow("Skärspalt:", self.rect_kerf)
+        rect_form.addRow("Kerf:", self.rect_kerf)
         self.rect_leadin = self._length_spin(0, 1000, 0)
         self.rect_leadin.setSuffix(" mm")
-        rect_form.addRow("Inledning:", self.rect_leadin)
-        self.leadin_button = QPushButton("Placera inledning")
-        self.leadin_button.setToolTip("Peka på eller nära figuren och klicka där inledningen ska vara.")
+        rect_form.addRow("Lead-in:", self.rect_leadin)
+        self.leadin_button = QPushButton("Place lead-in")
+        self.leadin_button.setToolTip("Point at or near the figure and click where the lead-in should be.")
         self.leadin_button.clicked.connect(lambda checked=False: self.place_leadin())
         rect_form.addRow(self.leadin_button)
         self.rect_error = QLabel()
@@ -1371,15 +1375,15 @@ class MainWindow(QMainWindow):
         layout.addWidget(rect_box)
         self.show_rectangle_fields(None)
 
-        self.show_rapids = QCheckBox("Visa snabbrörelser (G0)")
+        self.show_rapids = QCheckBox("Show rapids (G0)")
         self.show_rapids.setChecked(True)
         self.show_rapids.toggled.connect(self.rapids_toggled)
         layout.addWidget(self.show_rapids)
 
         # Only shown when embedded in QtPlasmaC, see enable_live_export.
-        self.autoload = QCheckBox("Läs in i QtPlasmaC vid byte till MAIN")
+        self.autoload = QCheckBox("Load into QtPlasmaC when going to MAIN")
         self.autoload.setChecked(True)
-        self.autoload.setToolTip("Nesten läses in i förhandsvisningen när du går från PLASMANEST till MAIN.")
+        self.autoload.setToolTip("The nest is loaded into the preview when you go from PLASMANEST to MAIN.")
         self.autoload.toggled.connect(lambda checked: self.write_live_export())
         self.autoload.hide()
         layout.addWidget(self.autoload)
@@ -1388,16 +1392,16 @@ class MainWindow(QMainWindow):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
-        help_label = QLabel("Vänsterdrag: flytta eller markera.\n"
-                            "Högerdrag på figur: rotera (Ctrl: steg om 15°).\n"
-                            "Hjul: zooma. Shift+hjul: rotera.\n"
-                            "Högerdrag på tom yta eller mittendrag: panorera.\n"
-                            "Pilar: flytta 1 mm (Shift: 10 mm).")
+        help_label = QLabel("Left drag: move or select.\n"
+                            "Right drag on a figure: rotate (Ctrl: 15° steps).\n"
+                            "Wheel: zoom. Shift+wheel: rotate.\n"
+                            "Right drag on empty space or middle drag: pan.\n"
+                            "Arrows: move 1 mm (Shift: 10 mm).")
         help_label.setWordWrap(True)
         help_label.setStyleSheet(f"color: {COLOR_HELP.name()};")
         layout.addWidget(help_label)
 
-        dock = QDockWidget("Verktyg", self)
+        dock = QDockWidget("Tools", self)
         dock.setObjectName("panel")
         dock.setFeatures(QDockWidget.DockWidgetMovable)
         # Machine screens can be small: the panel scrolls rather than pushing the window off screen.
@@ -1426,10 +1430,10 @@ class MainWindow(QMainWindow):
         return button
 
     def _build_actions(self):
-        file_menu = self.menuBar().addMenu("&Arkiv")
-        edit_menu = self.menuBar().addMenu("&Redigera")
-        view_menu = self.menuBar().addMenu("&Visa")
-        toolbar = self.addToolBar("Verktyg")
+        file_menu = self.menuBar().addMenu("&File")
+        edit_menu = self.menuBar().addMenu("&Edit")
+        view_menu = self.menuBar().addMenu("&View")
+        toolbar = self.addToolBar("Tools")
         toolbar.setObjectName("toolbar")
 
         def action(menu, text, slot, shortcut=None, tool=False):
@@ -1442,25 +1446,25 @@ class MainWindow(QMainWindow):
                 toolbar.addAction(item)
             return item
 
-        action(file_menu, "&Nytt projekt", self.new_project, QKeySequence.New)
-        action(file_menu, "&Öppna projekt…", self.open_project, QKeySequence.Open, True)
-        action(file_menu, "&Spara projekt", self.save, QKeySequence.Save, True)
-        action(file_menu, "Spara projekt &som…", self.save_as, QKeySequence.SaveAs)
+        action(file_menu, "&New project", self.new_project, QKeySequence.New)
+        action(file_menu, "&Open project…", self.open_project, QKeySequence.Open, True)
+        action(file_menu, "&Save project", self.save, QKeySequence.Save, True)
+        action(file_menu, "Save project &as…", self.save_as, QKeySequence.SaveAs)
         file_menu.addSeparator()
-        action(file_menu, "&Läs in G-kod…", self.load_files, "Ctrl+L", True)
-        self.export_action = action(file_menu, "&Exportera till QtPlasmaC (.ngc)…", self.export, "Ctrl+E", True)
+        action(file_menu, "&Load G-code…", self.load_files, "Ctrl+L", True)
+        self.export_action = action(file_menu, "&Export to QtPlasmaC (.ngc)…", self.export, "Ctrl+E", True)
         file_menu.addSeparator()
-        action(file_menu, "A&vsluta", self.close, QKeySequence.Quit)
+        action(file_menu, "&Quit", self.close, QKeySequence.Quit)
 
-        self.undo_action = action(edit_menu, "Ån&gra", self.undo, QKeySequence.Undo)
-        self.redo_action = action(edit_menu, "Gör &om", self.redo, QKeySequence.Redo)
+        self.undo_action = action(edit_menu, "&Undo", self.undo, QKeySequence.Undo)
+        self.redo_action = action(edit_menu, "&Redo", self.redo, QKeySequence.Redo)
         edit_menu.addSeparator()
-        action(edit_menu, "&Kopiera figur…", self.copy_selection, "Ctrl+D")
-        action(edit_menu, "&Ta bort figur", self.delete_selection, QKeySequence.Delete)
-        action(edit_menu, "Markera &alla", self.select_all, QKeySequence.SelectAll)
-        action(edit_menu, "&Rotera", lambda: self.rotate_selection(self.rotate_step.value()), "R")
+        action(edit_menu, "&Copy figure…", self.copy_selection, "Ctrl+D")
+        action(edit_menu, "&Delete figure", self.delete_selection, QKeySequence.Delete)
+        action(edit_menu, "Select &all", self.select_all, QKeySequence.SelectAll)
+        action(edit_menu, "R&otate", lambda: self.rotate_selection(self.rotate_step.value()), "R")
 
-        action(view_menu, "&Anpassa till fönstret", self.fit_view, "F", True)
+        action(view_menu, "&Fit to window", self.fit_view, "F", True)
 
     # --------------------------------------------------------------- selection
 
@@ -1523,7 +1527,7 @@ class MainWindow(QMainWindow):
             if shape is None:
                 return
             circle = isinstance(shape, Circle)
-            self.rect_box.setTitle("Cirkel" if circle else "Rektangel")
+            self.rect_box.setTitle("Circle" if circle else "Rectangle")
             for widget in (self.size_w_label, self.size_w, self.size_h_label, self.size_h):
                 widget.setVisible(not circle)
             for widget in (self.size_d_label, self.size_d):
@@ -1540,7 +1544,7 @@ class MainWindow(QMainWindow):
                 spin.setValue(value)
         index = self.rect_material.findData(shape.material)
         if index < 0:  # a material that is not in this machine's file
-            self.rect_material.addItem(f"{shape.material}: (saknas i materialfilen)", shape.material)
+            self.rect_material.addItem(f"{shape.material}: (not in the material file)", shape.material)
             index = self.rect_material.count() - 1
         self.rect_material.setCurrentIndex(index)
         self.rect_side.setCurrentIndex(1 if shape.inside else 0)
@@ -1548,8 +1552,8 @@ class MainWindow(QMainWindow):
         small_hole = isinstance(shape, Circle) and shape.small_hole
         self.rect_leadin.setEnabled(not small_hole)
         self.rect_leadin.setToolTip(
-            f"Hål under {format_number(SMALL_HOLE)} mm börjar i centrum med en halvcirkel, skärs med "
-            f"{SMALL_HOLE_SPEED} % hastighet och slutar med en halvcirkel, högst {format_number(OVERCUT)} mm."
+            f"Holes under {format_number(SMALL_HOLE)} mm start at the centre with a half circle, are cut at "
+            f"{SMALL_HOLE_SPEED} % speed and end with a half circle, at most {format_number(OVERCUT)} mm."
             if small_hole else "")
 
     def material_kerf(self, number):
@@ -1567,8 +1571,8 @@ class MainWindow(QMainWindow):
             return placement.map_point(shape.anchor)
         return placement.bounds()[:2]
 
-    POSITION_LABELS = {Rectangle: ("X (ritat hörn):", "Y (ritat hörn):"), Circle: ("X (centrum):", "Y (centrum):"),
-                       type(None): ("X (vänster kant):", "Y (nedre kant):")}
+    POSITION_LABELS = {Rectangle: ("X (drawn corner):", "Y (drawn corner):"), Circle: ("X (centre):", "Y (centre):"),
+                       type(None): ("X (left edge):", "Y (bottom edge):")}
 
     def update_placement_fields(self):
         selected = self.selected_parts()
@@ -1715,11 +1719,11 @@ class MainWindow(QMainWindow):
             else:
                 part.set_state("ok")
         self.outside_count, self.overlap_count = outside, len(overlapping)
-        messages = [f"{len(self.parts)} figurer"]
+        messages = [plural(len(self.parts), "figure")]
         if outside:
-            messages.append(f"<b style='color:{COLOR_OUTSIDE.name()}'>{outside} utanför plåten</b>")
+            messages.append(f"<b style='color:{COLOR_OUTSIDE.name()}'>{outside} outside the sheet</b>")
         if overlapping:
-            messages.append(f"<b style='color:{COLOR_OVERLAP.name()}'>{len(overlapping)} överlappar</b>")
+            messages.append(f"<b style='color:{COLOR_OVERLAP.name()}'>{len(overlapping)} overlapping</b>")
         self.status_label.setText(" · ".join(messages))
 
     def update_travel(self):
@@ -1747,7 +1751,7 @@ class MainWindow(QMainWindow):
         for row, part in enumerate(self.parts, 1):
             name = part.placement.program.name
             copy_numbers[name] = copy_numbers.get(name, 0) + 1
-            item = QListWidgetItem(f"{row}.  {name}  (kopia {copy_numbers[name]})")
+            item = QListWidgetItem(f"{row}.  {name}  (copy {copy_numbers[name]})")
             self.part_list.addItem(item)
             item.setSelected(part.isSelected())
             part.set_number(row)
@@ -1804,8 +1808,8 @@ class MainWindow(QMainWindow):
         placement.y += y - y0
 
     def load_files(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, "Läs in G-kod", "",
-                                                "G-kod (*.ngc *.nc *.tap *.gcode *.txt);;Alla filer (*)")
+        paths, _ = QFileDialog.getOpenFileNames(self, "Load G-code", "",
+                                                "G-code (*.ngc *.nc *.tap *.gcode *.txt);;All files (*)")
         self.load_paths(paths)
 
     def load_paths(self, paths):
@@ -1814,10 +1818,10 @@ class MainWindow(QMainWindow):
             try:
                 program = load_program(path)
             except (GCodeError, OSError) as error:
-                QMessageBox.critical(self, "Kan inte läsa in filen", f"{os.path.basename(path)}\n\n{error}")
+                QMessageBox.critical(self, "Cannot load the file", f"{os.path.basename(path)}\n\n{error}")
                 continue
             if program.warnings:
-                QMessageBox.warning(self, "Att känna till om filen",
+                QMessageBox.warning(self, "Notes on the file",
                                     os.path.basename(path) + "\n\n" + "\n".join(program.warnings))
             placement = Placement(program)
             self.place_free(placement)
@@ -1828,26 +1832,26 @@ class MainWindow(QMainWindow):
     def load_conversational(self, path=None):
         """Add the shapes accepted in QtPlasmaC's CONVERSATIONAL tab as one figure."""
         path = path or CONVERSATIONAL_FILE
-        title = "Hämta från CONVERSATIONAL"
+        title = "Get from CONVERSATIONAL"
         try:
             with open(path, encoding="utf-8", errors="replace") as handle:
                 text = handle.read()
         except OSError:
-            QMessageBox.information(self, title, "Det finns inget från CONVERSATIONAL. Skapa en figur där "
-                                                 "och godkänn den med ADD eller ACCEPT.")
+            QMessageBox.information(self, title, "There is nothing from CONVERSATIONAL. Make a shape there "
+                                                 "and accept it with ADD or ACCEPT.")
             return None
         if ";qtplasmac filtered g-code file" in text.lower():
-            QMessageBox.information(self, title, "CONVERSATIONAL innehåller den fil som var inläst i MAIN, "
-                                                 "inte en ny figur. Tryck NEW i CONVERSATIONAL och skapa "
-                                                 "figuren där.")
+            QMessageBox.information(self, title, "CONVERSATIONAL holds the file that was loaded in MAIN, "
+                                                 "not a new shape. Press NEW in CONVERSATIONAL and make "
+                                                 "the shape there.")
             return None
         name = "CONVERSATIONAL " + time.strftime("%H:%M:%S")
         try:
             program = Program(name, text)
         except GCodeError as error:
             message = str(error)
-            if "inga XY-rörelser" in message or "inga skärande" in message:
-                message = "CONVERSATIONAL är tom. Skapa en figur där och godkänn den med ADD eller ACCEPT."
+            if "no XY moves" in message or "no cutting moves" in message:
+                message = "CONVERSATIONAL is empty. Make a shape there and accept it with ADD or ACCEPT."
             QMessageBox.critical(self, title, message)
             return None
         if program.warnings:
@@ -1960,19 +1964,19 @@ class MainWindow(QMainWindow):
         self.sheet_height.setValue(sheet.height)
         self.sheet_width.setEnabled(sheet.is_rectangle and not drawing)
         self.sheet_height.setEnabled(sheet.is_rectangle and not drawing)
-        self.draw_button.setText("Avbryt" if drawing else "Rita")
+        self.draw_button.setText("Cancel" if drawing else "Draw")
         self.corners_button.setEnabled(not drawing)
         self.machine_button.setEnabled(not drawing)
         self.rectangle_button.setEnabled(not sheet.is_rectangle and not drawing)
         if drawing:
-            self.sheet_info.setText("Klicka ut hörnen. Avsluta med dubbelklick, Enter eller klick på "
-                                    "första hörnet. Backsteg tar bort senaste hörnet, Esc avbryter. "
-                                    "Shift ger raka kanter.")
+            self.sheet_info.setText("Click the corners. Finish with a double click, Enter or a click on "
+                                    "the first corner. Backspace removes the latest corner, Esc cancels. "
+                                    "Shift gives straight edges.")
         elif sheet.is_rectangle:
             self.sheet_info.setText("")
         else:
-            self.sheet_info.setText(f"Polygon med {len(sheet.corners)} hörn, {sheet.area / 1e6:.2f} m². "
-                                    "Bredd och höjd visar dess yttermått.")
+            self.sheet_info.setText(f"Polygon with {len(sheet.corners)} corners, {sheet.area / 1e6:.2f} m². "
+                                    "Width and height show its outer size.")
 
     def toggle_shape(self, kind):
         if self.view.shape_mode == kind:
@@ -1990,15 +1994,15 @@ class MainWindow(QMainWindow):
 
     def update_shape_panel(self):
         mode = self.view.shape_mode
-        self.rectangle_shape_button.setText("Avbryt rektangel" if mode == "rectangle" else "Rita rektangel")
-        self.circle_shape_button.setText("Avbryt cirkel" if mode == "circle" else "Rita cirkel")
+        self.rectangle_shape_button.setText("Cancel rectangle" if mode == "rectangle" else "Draw rectangle")
+        self.circle_shape_button.setText("Cancel circle" if mode == "circle" else "Draw circle")
 
     def add_shape(self, program):
         """A figure drawn in PlasmaNest, placed where it was drawn."""
         placement = Placement(program, *program.center)
         part = self.add_part(placement)
         self.after_change([part])
-        self.statusBar().showMessage(f"{program.name} mm skapad. Skriv exakta mått i panelen om det behövs.",
+        self.statusBar().showMessage(f"{program.name} mm made. Type exact sizes in the panel if needed.",
                                      10000)
         # Ready for exact numbers: type the width, Tab, the height, Enter (or the diameter, Enter).
         field = self.size_d if isinstance(shape_of(program), Circle) else self.size_w
@@ -2089,7 +2093,7 @@ class MainWindow(QMainWindow):
         return self.undo_index >= 0 and self.undo_stack[self.undo_index] != self.saved_state
 
     def update_title(self):
-        name = os.path.basename(self.project_path) if self.project_path else "Namnlös"
+        name = os.path.basename(self.project_path) if self.project_path else "Untitled"
         self.setWindowTitle(f"{'*' if self.is_dirty() else ''}{name} - {APP_NAME}")
         # Called after every change and every undo and redo.
         if getattr(self, "live_dir", None):
@@ -2109,9 +2113,9 @@ class MainWindow(QMainWindow):
     def live_problems(self):
         problems = []
         if self.outside_count:
-            problems.append(f"{self.outside_count} figurer ligger utanför plåten.")
+            problems.append(f"{plural(self.outside_count, 'figure')} outside the sheet.")
         if self.overlap_count:
-            problems.append(f"{self.overlap_count} figurer överlappar varandra.")
+            problems.append(f"{plural(self.overlap_count, 'figure')} overlapping each other.")
         warning = material_warning([p.placement for p in self.parts])
         if warning:
             problems.append(warning)
@@ -2130,12 +2134,12 @@ class MainWindow(QMainWindow):
             live.write(self.live_dir, gcode, len(placements), self.live_problems(), self.autoload.isChecked())
             self.live_state = state
         except Exception as error:  # never let the export stop the user's work
-            self.statusBar().showMessage(f"Kunde inte uppdatera nesten för QtPlasmaC: {error}", 15000)
+            self.statusBar().showMessage(f"Could not update the nest for QtPlasmaC: {error}", 15000)
 
     def confirm_discard(self):
         if not self.is_dirty():
             return True
-        answer = QMessageBox.question(self, APP_NAME, "Spara ändringarna i projektet?",
+        answer = QMessageBox.question(self, APP_NAME, "Save the changes to the project?",
                                       QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
         if answer == QMessageBox.Save:
             return self.save()
@@ -2162,7 +2166,7 @@ class MainWindow(QMainWindow):
     def open_project(self):
         if not self.confirm_discard():
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Öppna projekt", "", "PlasmaNest-projekt (*.pnest)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open project", "", "PlasmaNest project (*.pnest)")
         if path:
             self.open_project_path(path)
 
@@ -2170,7 +2174,7 @@ class MainWindow(QMainWindow):
         try:
             sheet, placements = load_project(path)
         except (OSError, ValueError, KeyError, IndexError, TypeError, GCodeError) as error:
-            QMessageBox.critical(self, "Kan inte öppna projektet", str(error))
+            QMessageBox.critical(self, "Cannot open the project", str(error))
             return
         self.view.stop_drawing()
         for part in list(self.parts):
@@ -2192,8 +2196,8 @@ class MainWindow(QMainWindow):
         return self.write_project(self.project_path)
 
     def save_as(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Spara projekt", self.project_path or "nest.pnest",
-                                              "PlasmaNest-projekt (*.pnest)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save project", self.project_path or "nest.pnest",
+                                              "PlasmaNest project (*.pnest)")
         if not path:
             return False
         if not path.lower().endswith(".pnest"):
@@ -2204,7 +2208,7 @@ class MainWindow(QMainWindow):
         try:
             save_project(path, self.sheet, [p.placement for p in self.parts])
         except OSError as error:
-            QMessageBox.critical(self, "Kan inte spara", str(error))
+            QMessageBox.critical(self, "Cannot save", str(error))
             return False
         self.project_path = path
         self.saved_state = self.undo_stack[self.undo_index]
@@ -2213,26 +2217,26 @@ class MainWindow(QMainWindow):
 
     def export(self):
         if not self.parts:
-            QMessageBox.information(self, APP_NAME, "Det finns inga figurer att exportera.")
+            QMessageBox.information(self, APP_NAME, "There are no figures to export.")
             return
         self.refresh()
         placements = [p.placement for p in self.parts]
         problems = []
         if self.outside_count:
-            problems.append(f"{self.outside_count} figurer ligger utanför plåten.")
+            problems.append(f"{plural(self.outside_count, 'figure')} outside the sheet.")
         if self.overlap_count:
-            problems.append(f"{self.overlap_count} figurer överlappar varandra.")
+            problems.append(f"{plural(self.overlap_count, 'figure')} overlapping each other.")
         warning = material_warning(placements)
         if warning:
             problems.append(warning)
         if problems:
-            answer = QMessageBox.warning(self, "Kontrollera innan export",
-                                         "\n".join(problems) + "\n\nExportera ändå?",
+            answer = QMessageBox.warning(self, "Check before exporting",
+                                         "\n".join(problems) + "\n\nExport anyway?",
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if answer != QMessageBox.Yes:
                 return
-        path, _ = QFileDialog.getSaveFileName(self, "Exportera till QtPlasmaC", self.export_suggestion(),
-                                              "G-kod (*.ngc)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export to QtPlasmaC", self.export_suggestion(),
+                                              "G-code (*.ngc)")
         if path:
             self.export_to(path)
 
@@ -2260,15 +2264,15 @@ class MainWindow(QMainWindow):
             with open(path, "w", encoding="utf-8", newline="\n") as handle:
                 handle.write(export_gcode([p.placement for p in self.parts]))
         except OSError as error:
-            QMessageBox.critical(self, "Kan inte exportera", str(error))
+            QMessageBox.critical(self, "Cannot export", str(error))
             return False
-        message = f"Exporterade {len(self.parts)} figurer till {path}"
+        message = f"Exported {plural(len(self.parts), 'figure')} to {path}"
         directory = self.export_dir()
         if directory is not None:
             if os.path.normcase(os.path.dirname(os.path.abspath(path))) == os.path.normcase(directory):
-                message += ". Öppna den i QtPlasmaC med knappen Ladda nest."
+                message += ". Open it in QtPlasmaC with the latest-file user button."
             else:
-                message += f". Knappen Ladda nest i QtPlasmaC hittar bara filer i {directory}."
+                message += f". The latest-file user button in QtPlasmaC only finds files in {directory}."
         self.statusBar().showMessage(message, 15000)
         return True
 

@@ -11,8 +11,8 @@ import os
 
 NC_FILES = os.path.join(os.path.expanduser("~"), "linuxcnc", "nc_files")
 FALLBACK_DIR = os.path.join(os.path.expanduser("~"), ".plasmanest")
-GCODE_NAME = "aktuell.ngc"
-STATUS_NAME = "aktuell.json"
+GCODE_NAME = "current.ngc"
+STATUS_NAME = "current.json"
 
 
 def live_dir(nc_files=NC_FILES):
@@ -68,21 +68,21 @@ def decide(status, last_loaded):
     Machine state is checked by the caller; this only looks at the files.
     """
     if status is None:
-        return "nothing", "ingen nest"
+        return "nothing", "no nest"
     if not status.get("autoload", True):
-        return "nothing", "automatisk inläsning av"
+        return "nothing", "autoload off"
     if not status.get("parts") or not status.get("checksum"):
-        return "nothing", "inga figurer"
+        return "nothing", "no figures"
     if status["checksum"] == last_loaded:
-        return "nothing", "redan inläst"
+        return "nothing", "already loaded"
     if status.get("problems"):
-        return "error", ("PlasmaNest-nesten lästes inte in:\n" + "\n".join(status["problems"])
-                         + "\nRätta till det i PLASMANEST, eller exportera och öppna filen själv.")
+        return "error", ("The PlasmaNest nest was not loaded:\n" + "\n".join(status["problems"])
+                         + "\nFix it in PLASMANEST, or export and open the file yourself.")
     try:
         with open(status["gcode"], "rb") as f:
             data = f.read()
     except OSError as error:
-        return "error", f"PlasmaNest-nesten kunde inte läsas: {error}"
+        return "error", f"The PlasmaNest nest could not be read: {error}"
     if checksum(data) != status["checksum"]:
-        return "nothing", "filen skrivs just nu"
+        return "nothing", "the file is being written"
     return "load", status["checksum"]

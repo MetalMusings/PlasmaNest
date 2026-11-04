@@ -42,7 +42,7 @@ class GCodeError(Exception):
     """The file cannot be nested. line is the 1-based source line, if known."""
 
     def __init__(self, message, line=None):
-        super().__init__(f"Rad {line}: {message}" if line else message)
+        super().__init__(f"Line {line}: {message}" if line else message)
         self.line = line
 
 
@@ -99,7 +99,7 @@ class _Expr:
     def parse(self):
         value = self._sum()
         if self._peek():
-            raise ValueError(f"oväntat tecken i uttryck: {self.s}")
+            raise ValueError(f"unexpected character in expression: {self.s}")
         return value
 
     def _sum(self):
@@ -149,13 +149,13 @@ class _Expr:
             self.i += 1
             value = self._sum()
             if self._peek() != "]":
-                raise ValueError(f"saknar ] i uttryck: {self.s}")
+                raise ValueError(f"missing ] in expression: {self.s}")
             self.i += 1
             return value
         if c == "#":
             match = PARAM_RE.match(self.s, self.i)
             if not match:
-                raise ValueError(f"ogiltig parameter i uttryck: {self.s}")
+                raise ValueError(f"invalid parameter in expression: {self.s}")
             self.i = match.end()
             key = normalize_param(match.group())
             if key not in self.params:
@@ -169,9 +169,9 @@ class _Expr:
         if match and match.group().lower() in FUNCTIONS:
             self.i = match.end()
             if self._peek() != "[":
-                raise ValueError(f"funktion utan argument i uttryck: {self.s}")
+                raise ValueError(f"function without argument in expression: {self.s}")
             return float(FUNCTIONS[match.group().lower()](self._atom()))
-        raise ValueError(f"kan inte tolka uttryck: {self.s}")
+        raise ValueError(f"cannot read expression: {self.s}")
 
 
 def evaluate(value, params):
@@ -207,12 +207,12 @@ def tokenize(code):
             continue
         letter = code[i].upper()
         if not (letter.isalpha() or letter == "$"):
-            raise ValueError(f"oväntat tecken '{code[i]}'")
+            raise ValueError(f"unexpected character '{code[i]}'")
         i += 1
         while i < n and code[i].isspace():
             i += 1
         if i >= n:
-            raise ValueError(f"ordet {letter} saknar värde")
+            raise ValueError(f"the word {letter} has no value")
         if code[i] == "[":
             depth, start = 0, i
             while i < n:
@@ -220,7 +220,7 @@ def tokenize(code):
                     # Names such as #<_hal[x]> hold brackets of their own.
                     i = code.find(">", i)
                     if i < 0:
-                        raise ValueError("parameternamn saknar >")
+                        raise ValueError("parameter name without >")
                 elif code[i] == "[":
                     depth += 1
                 elif code[i] == "]":
@@ -229,13 +229,13 @@ def tokenize(code):
                         break
                 i += 1
             if depth:
-                raise ValueError("saknar ] i uttryck")
+                raise ValueError("missing ] in expression")
             i += 1
             words.append((letter, code[start:i]))
             continue
         match = PARAM_RE.match(code, i) or NUMBER_RE.match(code, i)
         if not match:
-            raise ValueError(f"ordet {letter} har ogiltigt värde")
+            raise ValueError(f"the word {letter} has an invalid value")
         words.append((letter, match.group()))
         i = match.end()
     return words
@@ -280,10 +280,10 @@ def _r_to_center(start, end, radius, mode, line):
     dx, dy = end[0] - start[0], end[1] - start[1]
     chord = math.hypot(dx, dy)
     if chord < 1e-9:
-        raise GCodeError("R-båge med samma start- och slutpunkt", line)
+        raise GCodeError("R arc with the same start and end point", line)
     half = chord / 2
     if abs(radius) < half - 1e-6:
-        raise GCodeError("R-bågens radie är för liten för avståndet", line)
+        raise GCodeError("the R arc's radius is too small for the distance", line)
     height = math.sqrt(max(radius * radius - half * half, 0.0))
     # A positive R takes the short way round, a negative R the long way.
     side = height if (mode == 3) == (radius > 0) else -height
@@ -320,9 +320,9 @@ class Program:
         for number, raw in enumerate(self.text.splitlines(), 1):
             self._parse_line(raw.strip(), number)
         if self.scale is None:
-            self.warnings.append("Filen saknar G20/G21 - tolkas som millimeter.")
+            self.warnings.append("The file has no G20/G21 - read as millimetres.")
         if not any(op.kind == "move" for op in self.ops):
-            raise GCodeError("Filen innehåller inga XY-rörelser.")
+            raise GCodeError("The file has no XY moves.")
 
     def _unit(self):
         return self.scale if self.scale is not None else 1.0
@@ -335,10 +335,10 @@ class Program:
             self._parse_comment_line(line, number)
             return
         if code.startswith("/"):
-            raise GCodeError("Block delete (/) stöds inte.", number)
+            raise GCodeError("Block delete (/) is not supported.", number)
         if re.match(r"^[oO]\s*(\d|<)", code):
-            raise GCodeError("O-ord (underprogram och loopar) stöds inte. Exportera filen "
-                             "utan underprogram från CAM-programmet.", number)
+            raise GCodeError("O-words (subroutines and loops) are not supported. Export the file "
+                             "without subroutines from the CAM program.", number)
         if code.startswith("#"):
             self._parse_assignment(code, comments, number)
             return
@@ -352,12 +352,12 @@ class Program:
         lowered = line.lower().replace(" ", "")
         if lowered.startswith(";qtplasmacfilteredg-codefile"):
             # Exported, it would go through the filter again: holes would get a second overburn.
-            raise GCodeError("Filen har redan gått genom QtPlasmaC:s filter, som har lagt till "
-                             "överbränning och hastighetsändringar vid hål. Läs in originalfilen i "
-                             "stället.", number)
+            raise GCodeError("The file has already been through QtPlasmaC's filter, which has added "
+                             "overburn and speed changes at holes. Load the original file "
+                             "instead.", number)
         if lowered.startswith(";conversationalblock"):
             # The filter requires this on line 1, which is not where it would end up.
-            self.warnings.append(f"Rad {number}: QtPlasmaC-rubriken togs bort.")
+            self.warnings.append(f"Line {number}: the QtPlasmaC header was removed.")
             return
         match = re.match(r"^\(o=(\d)", lowered)
         if match:
@@ -370,7 +370,7 @@ class Program:
     def _parse_assignment(self, code, comments, number):
         match = ASSIGN_RE.match(code)
         if not match:
-            raise GCodeError(f"Kan inte tolka parameterraden: {code}", number)
+            raise GCodeError(f"Cannot read the parameter line: {code}", number)
         key = normalize_param(match.group(1))
         value_text = match.group(2)
         try:
@@ -391,8 +391,8 @@ class Program:
         try:
             return evaluate(word[1], self.params)
         except Unresolved as error:
-            raise GCodeError(f"Koordinaten {word[0]}{word[1]} beror på {error}, som bara "
-                             "LinuxCNC känner till. Filen kan inte flyttas säkert.", number)
+            raise GCodeError(f"The coordinate {word[0]}{word[1]} depends on {error}, which only "
+                             "LinuxCNC knows. The file cannot be moved safely.", number)
         except (ValueError, ArithmeticError) as error:
             raise GCodeError(str(error), number)
 
@@ -407,7 +407,7 @@ class Program:
                 axes[letter] = word
                 continue
             if letter in "ABCUVW":
-                raise GCodeError(f"Axeln {letter} stöds inte (endast X och Y kan flyttas).", number)
+                raise GCodeError(f"The {letter} axis is not supported (only X and Y can be moved).", number)
             if letter == "G":
                 action = self._parse_g(value, number)
                 if action == "motion":
@@ -421,7 +421,7 @@ class Program:
                 elif action == "keep":
                     kept.append(word)
                 elif action == "drop_line":
-                    self.warnings.append(f"Rad {number}: G{value} togs bort.")
+                    self.warnings.append(f"Line {number}: G{value} was removed.")
                     return
                 continue
             if letter == "M":
@@ -442,7 +442,7 @@ class Program:
 
         is_move = any(k in axes for k in "XYIJR")
         if machine_coords and is_move:
-            self.warnings.append(f"Rad {number}: G53-rörelse i XY togs bort.")
+            self.warnings.append(f"Line {number}: a G53 move in XY was removed.")
             return
         if is_move:
             self._add_move(axes, kept, comments, number)
@@ -452,14 +452,14 @@ class Program:
     def _parse_g(self, value, number):
         g = self._number_or_none(value)
         if g is None:
-            raise GCodeError(f"G-koden G{value} måste vara ett tal.", number)
+            raise GCodeError(f"The G-code G{value} must be a number.", number)
         g = round(g, 2)
         if g in (0, 1, 2, 3):
             return "motion"
         if g == 20 or g == 21:
             scale = MM_PER_INCH if g == 20 else 1.0
             if self.scale is not None and self.scale != scale:
-                raise GCodeError("Filen blandar G20 och G21.", number)
+                raise GCodeError("The file mixes G20 and G21.", number)
             self.scale = scale
             return "unit"
         if g in (90, 91):
@@ -473,14 +473,14 @@ class Program:
         if g in (28, 28.1, 30, 30.1):
             return "drop_line"
         if g == 92 or g == 52:
-            raise GCodeError(f"G{value} (förskjutning) stöds inte - QtPlasmaC tillåter inte G92 "
-                             "och placeringen skulle bli fel.", number)
+            raise GCodeError(f"G{value} (offset) is not supported - QtPlasmaC does not allow G92 "
+                             "and the placement would be wrong.", number)
         if g == 10:
-            raise GCodeError("G10 ändrar koordinatsystem och stöds inte.", number)
+            raise GCodeError("G10 changes coordinate systems and is not supported.", number)
         if g in (18, 19):
-            raise GCodeError(f"G{value}: bara XY-planet (G17) stöds.", number)
+            raise GCodeError(f"G{value}: only the XY plane (G17) is supported.", number)
         if g in (5, 5.1, 5.2, 5.3, 7, 8, 33, 33.1, 38.2, 38.3, 38.4, 38.5, 73, 76, 81, 82, 83, 84, 85, 86, 87, 88, 89):
-            raise GCodeError(f"G{value} stöds inte vid nesting.", number)
+            raise GCodeError(f"G{value} is not supported when nesting.", number)
         return "keep"
 
     @staticmethod
@@ -526,7 +526,7 @@ class Program:
         values = {k: self._value(w, number) * unit for k, w in axes.items()}
         start = self.pos
         if not self.seen_first_move and not ("X" in values and "Y" in values) and not self.dist_incremental:
-            self.warnings.append(f"Rad {number}: första rörelsen saknar X eller Y - saknad axel tolkas som 0.")
+            self.warnings.append(f"Line {number}: the first move has no X or Y - a missing axis is read as 0.")
         if self.dist_incremental:
             end = (start[0] + values.get("X", 0.0), start[1] + values.get("Y", 0.0))
         else:
@@ -542,12 +542,12 @@ class Program:
                 else:
                     center = (values.get("I", 0.0), values.get("J", 0.0))
             else:
-                raise GCodeError("Båge saknar I, J eller R.", number)
+                raise GCodeError("Arc without I, J or R.", number)
             for w in kept:
                 if w[0] == "P" and self._number_or_none(w[1]) not in (None, 1):
-                    raise GCodeError("Bågar med flera varv (P) stöds inte.", number)
+                    raise GCodeError("Arcs with several turns (P) are not supported.", number)
         elif any(k in axes for k in "IJR"):
-            raise GCodeError("I, J eller R på en rak rörelse.", number)
+            raise GCodeError("I, J or R on a straight move.", number)
 
         motion_words = {("G", w[1]) for w in kept if w[0] == "G" and self._number_or_none(w[1]) in (0, 1, 2, 3)}
         extras = [self._scaled_extra(w, kept) for w in kept
@@ -565,10 +565,10 @@ class Program:
         for m in moves:
             m.cut = m.mode != 0 and (m.torch or not has_torch)
         if not has_torch:
-            self.warnings.append("Filen saknar M3 - alla G1/G2/G3 visas som skärning, men "
-                                 "maskinen kommer inte att tända brännaren.")
+            self.warnings.append("The file has no M3 - all G1/G2/G3 are shown as cuts, but "
+                                 "the machine will not light the torch.")
         if not any(m.cut for m in moves):
-            raise GCodeError("Filen innehåller inga skärande rörelser.")
+            raise GCodeError("The file has no cutting moves.")
         # Parking moves after the final cut belong to the file, not to the part.
         last_cut = max(i for i, op in enumerate(self.ops) if op.kind == "move" and op.move.cut)
         self.ops = [op for i, op in enumerate(self.ops) if not (op.kind == "move" and i > last_cut)]

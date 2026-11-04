@@ -22,8 +22,8 @@ COMMAND = [sys.executable, os.path.join(ROOT, "plasmanest.py"), "--embed"]
 class Host(QTabWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Inbäddningsprov (som QtVCP)")
-        self.addTab(QLabel("Här skulle MAIN ligga."), "MAIN")
+        self.setWindowTitle("Embedding test (like QtVCP)")
+        self.addTab(QLabel("MAIN would be here."), "MAIN")
         self.process = subprocess.Popen(COMMAND, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
         xid = int(self.process.stdout.readline())
         page = QWidget()

@@ -1,4 +1,4 @@
-"""Save a sheet corner from a button on a pendant or gamepad, like the QtPlasmaC Spara punkt button.
+"""Save a sheet corner from a button on a pendant or gamepad, like the save point user button in QtPlasmaC.
 
 Load it from a postgui HAL file, without -W, so a failure here never stops LinuxCNC from starting:
 
@@ -56,21 +56,21 @@ def save_point():
 
 def main(argv):
     if len(argv) != 2:
-        print("Användning: point_button.py <bit-pinne>, till exempel input.0.btn-start", file=sys.stderr)
+        print("Usage: point_button.py <bit pin>, for example input.0.btn-start", file=sys.stderr)
         return 2
     pin = argv[1]
     import hal
     try:
         component = hal.component(COMPONENT)
     except Exception as error:
-        report_error(f"Kan inte skapa HAL-komponenten {COMPONENT} (körs den redan?): {error}")
+        report_error(f"Cannot make the HAL component {COMPONENT} (is it already running?): {error}")
         return 1
     component.ready()
     signal.signal(signal.SIGTERM, lambda *args: sys.exit(0))
     try:
         hal.get_value(pin)
     except Exception as error:
-        report_error(f"Kan inte läsa {pin}: {error}")
+        report_error(f"Cannot read {pin}: {error}")
         component.exit()
         return 1
     watcher = ButtonWatcher(lambda: hal.get_value(pin), save_point)

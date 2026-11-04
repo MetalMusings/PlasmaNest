@@ -38,8 +38,8 @@ def test_decide(tmp_path):
     assert live.decide(status, None) == ("load", status["checksum"])
     assert live.decide(status, status["checksum"])[0] == "nothing"
     assert live.decide(live.write(d, "M2\n", 1, [], False), None)[0] == "nothing"
-    action, text = live.decide(live.write(d, "M2\n", 1, ["2 figurer överlappar varandra."], True), None)
-    assert action == "error" and "överlappar" in text
+    action, text = live.decide(live.write(d, "M2\n", 1, ["2 figures overlap each other."], True), None)
+    assert action == "error" and "overlap" in text
 
 
 def test_half_written_gcode_is_not_loaded(tmp_path):
@@ -100,7 +100,7 @@ def test_embedded_window_keeps_the_export_up_to_date(window, tmp_path):
     window.parts[0].set_center(-5000, -5000)
     window.refresh()
     window.commit()
-    assert "utanför plåten" in live.read(d)["problems"][0]
+    assert "outside the sheet" in live.read(d)["problems"][0]
     window.undo()
     assert live.read(d)["problems"] == [] and live.read(d)["checksum"] == status["checksum"]
     window.autoload.setChecked(False)
@@ -125,10 +125,10 @@ def test_loader_reports_problems_once_and_does_not_load(tmp_path):
     import plasmanest_tab
     opened, errors = [], []
     loader = plasmanest_tab.NestLoader(None, str(tmp_path), lambda: True, opened.append, errors.append)
-    live.write(str(tmp_path), "M2\n", 2, ["2 figurer överlappar varandra."], True)
+    live.write(str(tmp_path), "M2\n", 2, ["2 figures overlap each other."], True)
     assert loader.leave_tab() == "error"
     assert loader.leave_tab() == "error"
-    assert opened == [] and len(errors) == 1 and "överlappar" in errors[0]
+    assert opened == [] and len(errors) == 1 and "overlap" in errors[0]
 
 
 def test_loader_does_nothing_while_the_machine_runs(tmp_path):

@@ -19,7 +19,7 @@ def laser_is_on():
     result = subprocess.run(["halcmd", "getp", "qtplasmac.laser_on"], capture_output=True, text=True, timeout=5)
     value = result.stdout.strip().upper()
     if result.returncode != 0 or value not in ("TRUE", "FALSE"):
-        raise machine.PointsError("Kan inte läsa qtplasmac.laser_on.")
+        raise machine.PointsError("Cannot read qtplasmac.laser_on.")
     return value == "TRUE"
 
 
@@ -30,19 +30,19 @@ def machine_name(ini_path):
 
 def save(stat, path=machine.POINTS_FILE):
     if not all(stat.homed[:stat.joints]):
-        raise machine.PointsError("Maskinen är inte referenskörd, ingen punkt sparad.")
+        raise machine.PointsError("The machine is not homed, no point saved.")
     laser = laser_is_on()
     offset = None
     if laser:
         offset = machine.read_laser_offset(machine.prefs_path(stat.ini_filename, machine_name(stat.ini_filename)))
     if laser and offset is None:
-        raise machine.PointsError("Lasern är på men ingen laserförskjutning finns i prefs-filen.")
+        raise machine.PointsError("The laser is on but the prefs file has no laser offset.")
     position = machine.aimed_point(stat.actual_position, laser, offset)
     point = machine.MachinePoint(position, machine.Offsets.from_stat(stat).work(position),
                                  "laser" if laser else "torch",
                                  datetime.datetime.now().isoformat(timespec="seconds"))
     count = machine.append_point(point, path)
-    return (f"PlasmaNest: punkt {count} sparad ({machine.SOURCE_NAMES[point.source].lower()}), "
+    return (f"PlasmaNest: point {count} saved ({machine.SOURCE_NAMES[point.source].lower()}), "
             f"X {machine.mm(point.work[0])} Y {machine.mm(point.work[1])}")
 
 

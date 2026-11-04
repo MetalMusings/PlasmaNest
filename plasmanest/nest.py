@@ -96,11 +96,11 @@ class Sheet:
                                            cleaned[0][1] - cleaned[-1][1]) <= GEOMETRY_TOLERANCE:
             cleaned.pop()
         if len(cleaned) < 3:
-            raise ValueError("Plåten behöver minst tre olika hörn.")
+            raise ValueError("The sheet needs at least three different corners.")
         self.corners = tuple(cleaned)
         self.edges = tuple(zip(self.corners, self.corners[1:] + self.corners[:1]))
         if all(_orientation(cleaned[0], cleaned[1], corner) == 0 for corner in cleaned):
-            raise ValueError("Plåtens hörn ligger på en rak linje.")
+            raise ValueError("The sheet's corners lie on a straight line.")
         self._check_simple()
         self.area = abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in self.edges)) / 2
         xs, ys = [c[0] for c in self.corners], [c[1] for c in self.corners]
@@ -126,9 +126,9 @@ class Sheet:
                     folded = (_orientation(p, shared, q) == 0
                               and (p[0] - shared[0]) * (q[0] - shared[0]) + (p[1] - shared[1]) * (q[1] - shared[1]) > 0)
                     if folded:
-                        raise ValueError("Plåtens kanter viker sig tillbaka över varandra.")
+                        raise ValueError("The sheet's edges fold back over each other.")
                 elif _segments_touch(a, b, c, d):
-                    raise ValueError("Plåtens kanter korsar varandra.")
+                    raise ValueError("The sheet's edges cross each other.")
 
     def inset(self, margin):
         """The sheet shrunk by margin mm from every edge, or ValueError if that is not a clean polygon."""
@@ -156,7 +156,7 @@ class Sheet:
             denominator = d[0] * e[1] - d[1] * e[0]
             t = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / denominator
             result.append((p[0] + t * d[0], p[1] + t * d[1]))
-        too_large = ValueError(f"Marginalen {margin:g} mm är för stor för plåtens form.")
+        too_large = ValueError(f"The margin {margin:g} mm is too large for the sheet's shape.")
         # An edge that turned around has been swallowed by its neighbours.
         for (a, b), (c, d) in zip(zip(corners, corners[1:] + corners[:1]), zip(result, result[1:] + result[:1])):
             if (b[0] - a[0]) * (d[0] - c[0]) + (b[1] - a[1]) * (d[1] - c[1]) <= 0:
@@ -247,8 +247,8 @@ def _move_text(placement, move):
 def export_gcode(placements):
     """Return the QtPlasmaC G-code for the placements, cut in list order."""
     if not placements:
-        raise ValueError("Det finns inga figurer att exportera.")
-    lines = [";PlasmaNest - nestad fil for QtPlasmaC"]
+        raise ValueError("There are no figures to export.")
+    lines = [";PlasmaNest - nested file for QtPlasmaC"]
 
     # QtPlasmaC requires permanent material comments before any temporary one.
     seen = set()
@@ -304,7 +304,7 @@ def material_warning(placements):
     with_material = [p for p in placements if p.program.has_materials]
     if with_material and len(with_material) != len(placements):
         names = sorted({p.program.name for p in placements if not p.program.has_materials})
-        return ("Dessa filer anger inget material och skärs med det som senast valdes: "
+        return ("These files set no material and are cut with the one chosen last: "
                 + ", ".join(names))
     return None
 
@@ -336,7 +336,7 @@ def load_project(path):
     elif version == PROJECT_VERSION:
         sheet = Sheet(data["sheet"]["corners"])
     else:
-        raise ValueError("Okänd version av projektfilen.")
+        raise ValueError("Unknown version of the project file.")
     programs = [Program(p["name"], p["text"]) for p in data["programs"]]
     placements = [Placement(programs[f["program"]], f["x"], f["y"], f["angle"]) for f in data["figures"]]
     return sheet, placements

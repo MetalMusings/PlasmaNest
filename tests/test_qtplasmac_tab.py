@@ -140,7 +140,7 @@ def test_program_starts_only_when_the_tab_is_chosen(app):
 def test_program_that_exits_early_shows_a_message(app):
     tab = plasmanest_tab.PlasmaNestTab([sys.executable, "-c", "pass"])
     tab.start()
-    assert wait_for(lambda: "avslutades" in tab.message.text())
+    assert wait_for(lambda: "ended" in tab.message.text())
     assert tab.process is None and not tab.restart.isHidden()
 
 
@@ -148,7 +148,7 @@ def test_program_that_never_answers_is_stopped(app):
     tab = plasmanest_tab.PlasmaNestTab([sys.executable, "-c", "import time; time.sleep(30)"], timeout_ms=300)
     tab.start()
     process = tab.process
-    assert wait_for(lambda: "svarade inte" in tab.message.text())
+    assert wait_for(lambda: "did not answer" in tab.message.text())
     assert process.poll() is not None and tab.process is None
 
 
@@ -202,7 +202,7 @@ def test_pin_changes_are_logged(app, tab_log):
     plasmanest_tab.install(handler)
     handler.convTabDisable.set(True)
     text = tab_log.read_text()
-    assert "installerad" in text and "convTabDisable = True" in text and "PLASMANEST" in text
+    assert "installed" in text and "convTabDisable = True" in text and "PLASMANEST" in text
 
 
 def test_value_set_before_qtplasmac_listens_is_still_applied(app):
@@ -223,7 +223,7 @@ def test_other_qtvcp_programs_are_skipped(app, tab_log):
         class w:
             pass
     assert plasmanest_tab.install(Panel()) is None
-    assert "hoppar över" in tab_log.read_text() and "Traceback" not in tab_log.read_text()
+    assert "skipping" in tab_log.read_text() and "Traceback" not in tab_log.read_text()
 
 
 def test_tab_takes_conversationals_place_and_keeps_qtplasmacs_indexes_right(app):

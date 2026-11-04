@@ -100,7 +100,7 @@ def test_save_point_with_torch(tmp_path, monkeypatch):
     message = save_point.save(fake_stat((140.0, 60.0), g5x=(40.0, 40.0)), path)
     point, = machine.read_points(path)
     assert point.machine == (140.0, 60.0) and point.work == (100.0, 20.0) and point.source == "torch"
-    assert "punkt 1" in message
+    assert "point 1" in message
 
 
 def test_save_point_with_laser(tmp_path, monkeypatch):
@@ -225,8 +225,8 @@ def test_dialog_without_linuxcnc_uses_saved_work_coordinates(app, tmp_path):
     machine.append_point(MachinePoint((500, 500), (7, 8), "laser", "2026-11-03T10:00:00"), path)
     dialog = MachineDialog(None, path, lambda: None)
     assert dialog.table.item(0, 0).text() == "7.00" and dialog.table.item(0, 2).text() == "Laser"
-    assert "svarar inte" in dialog.coordinates.text()
-    assert "minst tre" in dialog.result.text()
+    assert "not answering" in dialog.coordinates.text()
+    assert "At least three" in dialog.result.text()
     dialog.close()
 
 
@@ -235,7 +235,7 @@ def test_dialog_reports_a_broken_points_file(app, tmp_path):
     path = tmp_path / "points.txt"
     path.write_text("garbage\n")
     dialog = MachineDialog(None, str(path), lambda: None)
-    assert "Rad 1" in dialog.result.text() and dialog.sheet is None
+    assert "Line 1" in dialog.result.text() and dialog.sheet is None
     dialog.close()
 
 

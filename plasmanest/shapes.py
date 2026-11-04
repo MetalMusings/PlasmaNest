@@ -12,8 +12,8 @@ from dataclasses import dataclass, replace
 from .gcode import Program, format_number
 
 MIN_SIZE = 1.0  # mm
-HEADER = re.compile(r";PlasmaNest rektangel ([0-9.]+) x ([0-9.]+) mm")
-PARAMETERS = ";PlasmaNest-parametrar:"
+HEADER = re.compile(r";PlasmaNest rectangle ([0-9.]+) x ([0-9.]+) mm")
+PARAMETERS = ";PlasmaNest parameters:"
 
 # Small holes, the user's choice 2026-11-04: holes under this drawn diameter are cut at reduced
 # speed, start with a half circle from the centre and end with a half circle into the scrap,
@@ -24,7 +24,7 @@ OVERCUT = 2.0  # mm along the lead-out arc
 
 # Edges of the drawn rectangle, each with its start, end and outward normal, in clockwise order.
 # A lead-in position is (edge, fraction along it from its start).
-EDGE_NAMES = ("vänster", "övre", "höger", "nedre")
+EDGE_NAMES = ("left", "top", "right", "bottom")
 
 
 @dataclass(frozen=True)
@@ -56,17 +56,17 @@ class Rectangle:
     def check(self):
         n = format_number
         if self.width < MIN_SIZE or self.height < MIN_SIZE:
-            raise ValueError(f"Rektangeln måste vara minst {n(MIN_SIZE)} mm åt båda hållen.")
+            raise ValueError(f"The rectangle must be at least {n(MIN_SIZE)} mm both ways.")
         if self.kerf < 0 or self.leadin < 0:
-            raise ValueError("Skärspalt och inledning kan inte vara negativa.")
+            raise ValueError("Kerf and lead-in cannot be negative.")
         if self.inside:
             if min(self.width, self.height) <= self.kerf:
-                raise ValueError(f"Hålet är för litet för skärspalten {n(self.kerf)} mm.")
+                raise ValueError(f"The hole is too small for the kerf {n(self.kerf)} mm.")
             across = (self.width if self.edge in (0, 2) else self.height) - self.kerf
             if self.leadin >= across:
-                raise ValueError(f"Inledningen {n(self.leadin)} mm får inte plats i hålet.")
+                raise ValueError(f"The lead-in {n(self.leadin)} mm does not fit in the hole.")
         if self.edge not in range(4) or not 0.0 <= self.at <= 1.0:
-            raise ValueError("Ogiltig plats för inledningen.")
+            raise ValueError("Invalid place for the lead-in.")
 
     def path(self):
         """The torch path: lead-in start, cut start, then the corners back to the cut start."""
@@ -91,7 +91,7 @@ class Rectangle:
                     f"height={n(self.height)} side={'inside' if self.inside else 'outside'} kerf={n(self.kerf)} "
                     f"material={'-' if self.material is None else self.material} leadin={n(self.leadin)} "
                     f"edge={self.edge} at={n(self.at)}")
-        lines = [f";PlasmaNest rektangel {n(self.width)} x {n(self.height)} mm", settings, "G21 G40 G90"]
+        lines = [f";PlasmaNest rectangle {n(self.width)} x {n(self.height)} mm", settings, "G21 G40 G90"]
         if self.material is not None:
             lines += [f"M190 P{self.material}", "M66 P3 L3 Q1"]
         lines += ["F#<_hal[plasmac.cut-feed-rate]>", f"G0 X{n(leadin_start[0])} Y{n(leadin_start[1])}", "M3 $0 S1"]
@@ -108,7 +108,7 @@ class Rectangle:
 
     @property
     def name(self):
-        kind = "Hål" if self.inside else "Rektangel"
+        kind = "Hole" if self.inside else "Rectangle"
         return f"{kind} {format_number(self.width)} × {format_number(self.height)}"
 
     def program(self):
@@ -135,7 +135,7 @@ class Rectangle:
 
     @staticmethod
     def describe_leadin(position):
-        return f"{EDGE_NAMES[position[0]]} kant"
+        return f"{EDGE_NAMES[position[0]]} edge"
 
     def nearest_edge(self, point):
         """(edge, fraction, distance in mm) of the drawn edge closest to a point in program coordinates."""
@@ -178,14 +178,14 @@ class Circle:
     def check(self):
         n = format_number
         if self.diameter < MIN_SIZE:
-            raise ValueError(f"Cirkeln måste vara minst {n(MIN_SIZE)} mm i diameter.")
+            raise ValueError(f"The circle must be at least {n(MIN_SIZE)} mm in diameter.")
         if self.kerf < 0 or self.leadin < 0:
-            raise ValueError("Skärspalt och inledning kan inte vara negativa.")
+            raise ValueError("Kerf and lead-in cannot be negative.")
         if self.inside:
             if self.diameter <= self.kerf:
-                raise ValueError(f"Hålet är för litet för skärspalten {n(self.kerf)} mm.")
+                raise ValueError(f"The hole is too small for the kerf {n(self.kerf)} mm.")
             if self.leadin > self.path_radius and not self.small_hole:
-                raise ValueError(f"Inledningen {n(self.leadin)} mm får inte plats i hålet.")
+                raise ValueError(f"The lead-in {n(self.leadin)} mm does not fit in the hole.")
 
     def path(self):
         """(lead-in start, cut start). The cut is one full circle from the cut start.
@@ -208,7 +208,7 @@ class Circle:
                     f"side={'inside' if self.inside else 'outside'} kerf={n(self.kerf)} "
                     f"material={'-' if self.material is None else self.material} leadin={n(self.leadin)} "
                     f"angle={n(self.angle)}")
-        lines = [f";PlasmaNest cirkel {n(self.diameter)} mm", settings, "G21 G40 G90"]
+        lines = [f";PlasmaNest circle {n(self.diameter)} mm", settings, "G21 G40 G90"]
         if self.material is not None:
             lines += [f"M190 P{self.material}", "M66 P3 L3 Q1"]
         lines += ["F#<_hal[plasmac.cut-feed-rate]>", f"G0 X{n(start[0])} Y{n(start[1])}", "M3 $0 S1"]
@@ -245,7 +245,7 @@ class Circle:
 
     @property
     def name(self):
-        return f"{'Hål' if self.inside else 'Cirkel'} Ø{format_number(self.diameter)}"
+        return f"{'Hole' if self.inside else 'Circle'} Ø{format_number(self.diameter)}"
 
     def program(self):
         return Program(self.name, self.gcode())
@@ -268,10 +268,10 @@ class Circle:
 
     @staticmethod
     def describe_leadin(position):
-        return f"vid {format_number(round(position))}°"
+        return f"at {format_number(round(position))}°"
 
 
-CIRCLE_HEADER = re.compile(r";PlasmaNest cirkel ([0-9.]+) mm")
+CIRCLE_HEADER = re.compile(r";PlasmaNest circle ([0-9.]+) mm")
 
 
 def circle_of(program):
@@ -304,36 +304,18 @@ def rectangle_program(x0, y0, x1, y1, **settings):
 def rectangle_of(program):
     """The Rectangle a program was made from, or None for any other figure."""
     lines = program.text.lstrip().split("\n")
-    if not lines or not HEADER.match(lines[0]):
+    if len(lines) < 2 or not HEADER.match(lines[0]) or not lines[1].startswith(PARAMETERS):
         return None
-    if len(lines) > 1 and lines[1].startswith(PARAMETERS):
-        try:
-            values = dict(word.split("=", 1) for word in lines[1][len(PARAMETERS):].split())
-            rectangle = Rectangle(
-                float(values["left"]), float(values["bottom"]), float(values["width"]), float(values["height"]),
-                inside=values["side"] == "inside", kerf=float(values["kerf"]),
-                material=None if values["material"] == "-" else int(values["material"]),
-                leadin=float(values["leadin"]), edge=int(values["edge"]), at=float(values["at"]))
-            return rectangle if rectangle.gcode() == program.text else None
-        except (KeyError, ValueError):
-            return None
-    return _first_version(program, lines[0])
-
-
-def _first_version(program, header):
-    """Rectangles from the first version had no settings line: no kerf, lead-in or material."""
-    match = HEADER.match(header)
-    cuts = [p for p in program.paths if p.kind == "cut"]
-    if len(cuts) != 1:
+    try:
+        values = dict(word.split("=", 1) for word in lines[1][len(PARAMETERS):].split())
+        rectangle = Rectangle(
+            float(values["left"]), float(values["bottom"]), float(values["width"]), float(values["height"]),
+            inside=values["side"] == "inside", kerf=float(values["kerf"]),
+            material=None if values["material"] == "-" else int(values["material"]),
+            leadin=float(values["leadin"]), edge=int(values["edge"]), at=float(values["at"]))
+        return rectangle if rectangle.gcode() == program.text else None
+    except (KeyError, ValueError):
         return None
-    xs, ys = [x for x, _ in cuts[0].points], [y for _, y in cuts[0].points]
-    left, bottom, width, height = min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
-    if abs(width - float(match.group(1))) > 1e-6 or abs(height - float(match.group(2))) > 1e-6:
-        return None
-    if cuts[0].points != [(left, bottom), (left, bottom + height), (left + width, bottom + height),
-                          (left + width, bottom), (left, bottom)]:
-        return None
-    return Rectangle(left, bottom, width, height)
 
 
 def with_changes(rectangle, **changes):

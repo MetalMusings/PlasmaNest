@@ -379,13 +379,13 @@ def assert_corners_close(sheet, corners, tolerance=2.0):
 def test_draw_polygon_and_finish_with_enter(coarse):
     corners = [(100, 100), (700, 100), (700, 400), (300, 450)]
     draw(coarse, corners)
-    assert coarse.view.drawing is not None and coarse.draw_button.text() == "Avbryt"
+    assert coarse.view.drawing is not None and coarse.draw_button.text() == "Cancel"
     press_key(coarse, Qt.Key_Return)
-    assert coarse.view.drawing is None and coarse.draw_button.text() == "Rita"
+    assert coarse.view.drawing is None and coarse.draw_button.text() == "Draw"
     assert_corners_close(coarse.sheet, corners)
     assert all(float(c).is_integer() for corner in coarse.sheet.corners for c in corner)
     assert not coarse.sheet.is_rectangle
-    assert "4 hörn" in coarse.sheet_info.text()
+    assert "4 corners" in coarse.sheet_info.text()
 
 
 def test_click_on_first_corner_closes_the_polygon(coarse):
@@ -414,7 +414,7 @@ def test_escape_cancels_and_backspace_takes_back(coarse):
     press_key(coarse, Qt.Key_Escape)
     assert coarse.view.drawing is None and coarse.sheet is before
     assert coarse.view.draft.path().isEmpty()
-    assert coarse.draw_button.text() == "Rita"
+    assert coarse.draw_button.text() == "Draw"
 
 
 def test_crossing_polygon_is_refused_and_can_be_corrected(coarse):
@@ -422,7 +422,7 @@ def test_crossing_polygon_is_refused_and_can_be_corrected(coarse):
     draw(coarse, [(100, 100), (700, 400), (700, 100), (100, 400)])
     press_key(coarse, Qt.Key_Return)
     assert coarse.view.drawing is not None and coarse.sheet is before
-    assert "korsar" in coarse.sheet_info.text()
+    assert "cross" in coarse.sheet_info.text()
     press_key(coarse, Qt.Key_Backspace)
     press_key(coarse, Qt.Key_Return)
     assert coarse.view.drawing is None
@@ -432,7 +432,7 @@ def test_crossing_polygon_is_refused_and_can_be_corrected(coarse):
 def test_too_few_corners_stay_in_drawing(coarse):
     draw(coarse, [(100, 100), (700, 100)])
     press_key(coarse, Qt.Key_Return)
-    assert coarse.view.drawing is not None and "tre" in coarse.sheet_info.text()
+    assert coarse.view.drawing is not None and "three" in coarse.sheet_info.text()
     press_key(coarse, Qt.Key_Escape)
 
 
@@ -483,7 +483,7 @@ def test_polygon_decides_what_is_outside(window):
     part.set_center(225, 400)
     window.refresh()
     assert window.outside_count == 1 and part.state == "outside"
-    assert "utanför" in window.status_label.text()
+    assert "outside" in window.status_label.text()
     part.set_center(300, 150)
     window.set_sheet(Sheet([(0, 0), (100, 0), (0, 100)]))
     assert part.state == "outside"
@@ -544,7 +544,7 @@ def test_undo_during_drawing_ends_the_drawing(coarse):
     coarse.set_sheet(Sheet(OFFCUT))
     draw(coarse, [(100, 100)])
     coarse.undo()
-    assert coarse.view.drawing is None and coarse.draw_button.text() == "Rita"
+    assert coarse.view.drawing is None and coarse.draw_button.text() == "Draw"
     assert coarse.view.draft.path().isEmpty()
 
 
@@ -610,11 +610,11 @@ def test_corner_dialog_add_and_remove_rows(window):
 
 
 @pytest.mark.parametrize("edit, message", [
-    (lambda d: d.table.item(0, 0).setText("abc"), "Rad 1"),
-    (lambda d: d.table.item(1, 1).setText(""), "Rad 2"),
-    (lambda d: d.table.item(2, 0).setText("nan"), "Rad 3"),
-    (lambda d: (d.table.removeRow(0), d.table.removeRow(0)), "tre"),
-    (lambda d: d.table.item(0, 0).setText("1000"), "korsar"),
+    (lambda d: d.table.item(0, 0).setText("abc"), "Row 1"),
+    (lambda d: d.table.item(1, 1).setText(""), "Row 2"),
+    (lambda d: d.table.item(2, 0).setText("nan"), "Row 3"),
+    (lambda d: (d.table.removeRow(0), d.table.removeRow(0)), "three"),
+    (lambda d: d.table.item(0, 0).setText("1000"), "cross"),
 ])
 def test_corner_dialog_refuses_bad_input_and_stays_open(window, edit, message):
     dialog = CornerDialog(window, [(0, 0), (100, 0), (100, 100), (0, 100)])
@@ -642,7 +642,7 @@ def test_export_goes_where_the_latest_file_button_looks(window, tmp_path, monkey
 
     window.load_paths([FLANS])
     assert window.export_to(str(directory / "a.ngc"))
-    assert "Ladda nest" in window.statusBar().currentMessage()
+    assert "latest-file" in window.statusBar().currentMessage()
     time.sleep(0.02)
     assert window.export_to(str(directory / "b.ngc"))
     time.sleep(0.02)
@@ -650,7 +650,7 @@ def test_export_goes_where_the_latest_file_button_looks(window, tmp_path, monkey
     # QtPlasmaC's latest-file: max(glob('<dir>/*.ngc'), key=os.path.getctime)
     assert max(glob.glob(f"{directory}/*.ngc"), key=os.path.getctime) == str(directory / "a.ngc")
     assert window.export_to(str(tmp_path / "elsewhere.ngc"))
-    assert "hittar bara filer i" in window.statusBar().currentMessage()
+    assert "only finds files in" in window.statusBar().currentMessage()
 
 
 def test_embedded_mode_announces_the_window_and_stops_on_sigterm(tmp_path):
@@ -803,7 +803,7 @@ def test_conversational_without_shapes_or_with_the_main_file_is_explained(window
     filtered.write_text(open(CONVERSATIONAL).read() + ";qtplasmac filtered G-code file")
     assert window.load_conversational(str(filtered)) is None
     assert [kind for kind, text in messages] == ["information", "critical", "information"]
-    assert "tom" in messages[1][1] and "MAIN" in messages[2][1]
+    assert "empty" in messages[1][1] and "MAIN" in messages[2][1]
     assert window.parts == []
 
 
@@ -874,7 +874,7 @@ def zoom_in(win, x, y):
 def test_draw_rectangle_by_dragging_shows_coordinates_then_size(window):
     zoom_in(window, 220, 90)
     window.toggle_rectangle()
-    assert window.rectangle_shape_button.text() == "Avbryt rektangel"
+    assert window.rectangle_shape_button.text() == "Cancel rectangle"
     mouse(window, QEvent.MouseMove, (100.2, 49.8), buttons=Qt.NoButton, button=Qt.NoButton)
     assert window.view.label.text == "X 100   Y 50"
     mouse(window, QEvent.MouseButtonPress, (100.2, 49.8))
@@ -884,10 +884,10 @@ def test_draw_rectangle_by_dragging_shows_coordinates_then_size(window):
     mouse(window, QEvent.MouseButtonRelease, (340.4, 129.6), buttons=Qt.NoButton)
     assert len(window.parts) == 1
     part = window.parts[0]
-    assert part.placement.program.name == "Rektangel 240 × 80"
+    assert part.placement.program.name == "Rectangle 240 × 80"
     assert part.placement.bounds() == (100, 50, 340, 130)
     assert window.view.shape_mode is None and not window.view.label.isVisible()
-    assert window.rectangle_shape_button.text() == "Rita rektangel"
+    assert window.rectangle_shape_button.text() == "Draw rectangle"
     window.undo()
     assert window.parts == []
 
@@ -937,7 +937,7 @@ def test_exact_size_can_be_typed_right_after_drawing(window):
     QTest.keyClick(window.size_h, Qt.Key_Return)
     part, = window.parts
     assert part.placement.bounds() == pytest.approx((100, 50, 350, 170))
-    assert part.placement.program.name == "Rektangel 250 × 120"
+    assert part.placement.program.name == "Rectangle 250 × 120"
     window.undo()
     assert window.parts[0].placement.bounds() == pytest.approx((100, 50, 350, 130))  # one step per field
     window.undo()
@@ -957,7 +957,7 @@ def test_resized_rectangle_keeps_its_corner_and_cutting_order(window):
     window.size_h.setValue(200)
     window.rectangle_edited()
     rect = window.parts[0]
-    assert rect.placement.program.name == "Rektangel 240 × 200"
+    assert rect.placement.program.name == "Rectangle 240 × 200"
     assert rect.placement.angle == pytest.approx(30)
     assert rect.placement.map_point((100, 50)) == pytest.approx(corner)
     assert window.parts[1].placement.program.name == "flans.ngc"
@@ -985,14 +985,14 @@ def test_rectangle_settings_from_the_panel(window, monkeypatch):
         win.rect_leadin.setValue(6)
         win.rectangle_edited()
         r = rectangle_of(win.parts[0].placement.program)
-        assert r.inside and r.leadin == 6 and win.parts[0].placement.program.name == "Hål 240 × 80"
+        assert r.inside and r.leadin == 6 and win.parts[0].placement.program.name == "Hole 240 × 80"
         # A new rectangle starts with the settings used last.
         assert win.new_rectangle(0, 0, 10, 10).material == 5 and win.new_rectangle(0, 0, 10, 10).inside
         # An impossible setting is refused with a message and the rectangle stays as it was.
         win.rect_leadin.setValue(500)
         win.rectangle_edited()
         assert rectangle_of(win.parts[0].placement.program).leadin == 6
-        assert "får inte plats" in win.rect_error.text() and win.rect_leadin.value() == 6
+        assert "does not fit" in win.rect_error.text() and win.rect_leadin.value() == 6
     finally:
         win.saved_state = win.undo_stack[win.undo_index]
         win.close()
@@ -1005,9 +1005,9 @@ def test_leadin_is_placed_by_pointing_near_the_rectangle(window):
     window.place_leadin()
     assert window.view.shape_mode == "leadin"
     mouse(window, QEvent.MouseMove, (220, 200), buttons=Qt.NoButton, button=Qt.NoButton)  # too far away
-    assert window.view.leadin_choice is None and "närmare" in window.view.label.text
+    assert window.view.leadin_choice is None and "closer" in window.view.label.text
     mouse(window, QEvent.MouseMove, (280, 133), buttons=Qt.NoButton, button=Qt.NoButton)
-    assert window.view.leadin_choice == (1, 0.75) and "övre" in window.view.label.text
+    assert window.view.leadin_choice == (1, 0.75) and "top" in window.view.label.text
     assert not window.view.draft.path().isEmpty()
     mouse(window, QEvent.MouseButtonPress, (280, 133))
     r = rectangle_of(window.parts[0].placement.program)
@@ -1035,7 +1035,7 @@ def test_leadin_on_a_rotated_rectangle(window):
 def test_position_fields_of_a_rectangle_give_its_drawn_corner(window):
     from plasmanest.shapes import Rectangle
     window.add_shape(Rectangle(363, 366, 20, 20, kerf=1.2, material=None, leadin=5, edge=1, at=0.03).program())
-    assert window.pos_x_label.text() == "X (ritat hörn):"
+    assert window.pos_x_label.text() == "X (drawn corner):"
     assert (window.pos_x.value(), window.pos_y.value()) == pytest.approx((363, 366))
     window.pos_x.setValue(30)
     window.pos_y.setValue(30)
@@ -1048,7 +1048,7 @@ def test_position_fields_of_a_rectangle_give_its_drawn_corner(window):
     window.load_paths([FLANS])
     window.scene_.clearSelection()
     window.parts[1].setSelected(True)
-    assert window.pos_x_label.text() == "X (vänster kant):"
+    assert window.pos_x_label.text() == "X (left edge):"
 
 
 def test_draw_circle_shows_the_diameter_and_types_an_exact_one(window):
@@ -1056,7 +1056,7 @@ def test_draw_circle_shows_the_diameter_and_types_an_exact_one(window):
     zoom_in(window, 200, 200)
     window.activateWindow()
     window.toggle_circle()
-    assert window.circle_shape_button.text() == "Avbryt cirkel"
+    assert window.circle_shape_button.text() == "Cancel circle"
     mouse(window, QEvent.MouseMove, (200, 200), buttons=Qt.NoButton, button=Qt.NoButton)
     assert window.view.label.text == "X 200   Y 200"
     mouse(window, QEvent.MouseButtonPress, (200, 200))
@@ -1066,9 +1066,9 @@ def test_draw_circle_shows_the_diameter_and_types_an_exact_one(window):
     mouse(window, QEvent.MouseButtonRelease, (230, 200), buttons=Qt.NoButton)
     part, = window.parts
     assert shape_of(part.placement.program) == Circle(200, 200, 60)
-    assert window.rect_box.title() == "Cirkel" and window.size_d.isVisibleTo(window)
+    assert window.rect_box.title() == "Circle" and window.size_d.isVisibleTo(window)
     assert not window.size_w.isVisibleTo(window)
-    assert window.pos_x_label.text() == "X (centrum):" and window.pos_x.value() == 200
+    assert window.pos_x_label.text() == "X (centre):" and window.pos_x.value() == 200
     assert window.size_d.hasFocus()
     QTest.keyClicks(window.size_d, "75")
     QTest.keyClick(window.size_d, Qt.Key_Return)
@@ -1147,6 +1147,6 @@ def test_leadin_field_is_disabled_for_small_holes(window):
     from plasmanest.shapes import Circle
     window.add_shape(Circle(200, 200, 20, inside=True, kerf=1.2).program())
     assert window.rect_box.isVisible() and not window.rect_leadin.isEnabled()
-    assert "centrum" in window.rect_leadin.toolTip()
+    assert "centre" in window.rect_leadin.toolTip()
     window.add_shape(Circle(400, 200, 30, inside=True, kerf=1.2).program())
     assert window.rect_leadin.isEnabled() and window.rect_leadin.toolTip() == ""

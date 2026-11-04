@@ -204,7 +204,7 @@ def test_expressions_and_parameters_are_resolved():
 def test_unsafe_gcode_is_refused(line):
     with pytest.raises(GCodeError) as error:
         Program("a", BASIC.replace("G0 X10 Y10", line + "\nG0 X10 Y10"))
-    assert "Rad" in str(error.value)
+    assert "Line" in str(error.value)
 
 
 def test_files_without_motion_are_refused():
@@ -286,12 +286,12 @@ BAR = "G21\nG0 X0 Y0\nM3 $0 S1\nG1 X200 Y0\nM5 $0\nM2\n"
 
 
 @pytest.mark.parametrize("corners, message", [
-    ([(0, 0), (10, 0)], "tre"),
-    ([(0, 0), (10, 0), (0, 0)], "tre"),
-    ([(0, 0), (10, 0), (20, 0)], "linje"),
-    ([(0, 0), (100, 100), (100, 0), (0, 100)], "korsar"),
-    ([(0, 0), (100, 0), (50, 0), (50, 50)], "viker"),
-    ([(0, 0), (100, 0), (100, 100), (50, 0), (0, 100)], "korsar"),
+    ([(0, 0), (10, 0)], "three"),
+    ([(0, 0), (10, 0), (0, 0)], "three"),
+    ([(0, 0), (10, 0), (20, 0)], "straight line"),
+    ([(0, 0), (100, 100), (100, 0), (0, 100)], "cross"),
+    ([(0, 0), (100, 0), (50, 0), (50, 50)], "fold back"),
+    ([(0, 0), (100, 0), (100, 100), (50, 0), (0, 100)], "cross"),
 ])
 def test_invalid_sheets_are_refused(corners, message):
     with pytest.raises(ValueError, match=message):
@@ -428,7 +428,7 @@ def test_project_round_trip(tmp_path):
 def test_rectangle_is_cut_clockwise_from_the_lower_left_corner():
     from plasmanest.shapes import rectangle_program
     program = rectangle_program(250, 120, 10, 20)
-    assert program.name == "Rektangel 240 × 100"
+    assert program.name == "Rectangle 240 × 100"
     cut, = [p for p in program.paths if p.kind == "cut"]
     assert cut.points == [(10, 20), (10, 120), (250, 120), (250, 20), (10, 20)]
     assert program.center == (130, 70)
@@ -451,13 +451,6 @@ def test_rectangles_are_recognised_but_not_other_figures():
     assert rectangle_of(Program("x", tampered)) is None
 
 
-def test_first_version_rectangles_are_still_recognised():
-    from plasmanest.shapes import Rectangle, rectangle_of
-    old = ";PlasmaNest rektangel 240 x 80 mm\nG21 G40 G90\nF#<_hal[plasmac.cut-feed-rate]>\nG0 X100 Y50\n" \
-          "M3 $0 S1\nG1 X100 Y130\nG1 X340 Y130\nG1 X340 Y50\nG1 X100 Y50\nM5 $0\nM2\n"
-    assert rectangle_of(Program("x", old)) == Rectangle(100, 50, 240, 80)
-
-
 def test_outside_cut_moves_out_half_the_kerf_clockwise_with_leadin_from_outside():
     from plasmanest.shapes import Rectangle, rectangle_of
     r = Rectangle(100, 50, 240, 80, kerf=1.2, material=3, leadin=4, edge=0, at=0.5)
@@ -473,7 +466,7 @@ def test_inside_cut_moves_in_half_the_kerf_counter_clockwise_with_leadin_from_in
     from plasmanest.shapes import Rectangle, rectangle_of
     r = Rectangle(0, 0, 50, 30, inside=True, kerf=1.6, leadin=5, edge=3, at=0.5)
     program = r.program()
-    assert rectangle_of(program) == r and program.name == "Hål 50 × 30"
+    assert rectangle_of(program) == r and program.name == "Hole 50 × 30"
     cut, = [p for p in program.paths if p.kind == "cut"]
     assert cut.points == pytest.approx([(25, 5.8), (25, 0.8), (49.2, 0.8), (49.2, 29.2), (0.8, 29.2),
                                         (0.8, 0.8), (25, 0.8)])
@@ -481,9 +474,9 @@ def test_inside_cut_moves_in_half_the_kerf_counter_clockwise_with_leadin_from_in
 
 def test_impossible_rectangles_are_refused():
     from plasmanest.shapes import Rectangle
-    with pytest.raises(ValueError, match="får inte plats"):
+    with pytest.raises(ValueError, match="does not fit"):
         Rectangle(0, 0, 50, 30, inside=True, kerf=1.6, leadin=29, edge=3).gcode()
-    with pytest.raises(ValueError, match="för litet"):
+    with pytest.raises(ValueError, match="too small"):
         Rectangle(0, 0, 50, 1.5, inside=True, kerf=1.6).gcode()
     with pytest.raises(ValueError):
         Rectangle(0, 0, 50, 30, leadin=-1).gcode()
@@ -509,7 +502,7 @@ def test_circle_part_is_cut_clockwise_outside_the_kerf_with_leadin_from_outside(
     from plasmanest.shapes import Circle, shape_of
     c = Circle(100, 100, 50, kerf=1.2, material=1, leadin=4)
     program = c.program()
-    assert shape_of(program) == c and program.name == "Cirkel Ø50"
+    assert shape_of(program) == c and program.name == "Circle Ø50"
     assert "G2 X74.4 Y100 I25.6 J0" in program.text and "M190 P1" in program.text
     cut, = [p for p in program.paths if p.kind == "cut"]
     assert cut.points[0] == pytest.approx((70.4, 100)) and cut.points[1] == pytest.approx((74.4, 100))
@@ -521,7 +514,7 @@ def test_circle_hole_is_cut_counter_clockwise_inside_the_kerf_with_leadin_from_i
     from plasmanest.shapes import Circle, shape_of
     c = Circle(0, 0, 40, inside=True, kerf=1.6, leadin=5, angle=90)
     program = c.program()
-    assert shape_of(program) == c and program.name == "Hål Ø40"
+    assert shape_of(program) == c and program.name == "Hole Ø40"
     assert "G3 X0 Y19.2 I0 J-19.2" in program.text and "M67" not in program.text
     cut, = [p for p in program.paths if p.kind == "cut"]
     assert cut.points[0] == pytest.approx((0, 14.2))
@@ -559,9 +552,9 @@ def test_small_hole_is_cut_slowly_with_half_circle_leads_from_the_centre():
 
 def test_impossible_circles_are_refused():
     from plasmanest.shapes import Circle
-    with pytest.raises(ValueError, match="får inte plats"):
+    with pytest.raises(ValueError, match="does not fit"):
         Circle(0, 0, 40, inside=True, kerf=1.6, leadin=20).gcode()
-    with pytest.raises(ValueError, match="för litet"):
+    with pytest.raises(ValueError, match="too small"):
         Circle(0, 0, 1.5, inside=True, kerf=1.6).gcode()
     with pytest.raises(ValueError):
         Circle(0, 0, 0.5).gcode()
@@ -575,3 +568,4 @@ def test_circle_nearest_and_export_through_rotation():
     program = Circle(100, 100, 50, kerf=1.2, leadin=4).program()
     text = export_gcode([Placement(program, 300, 200, 30)])
     assert "G2 " in text and "I" in text
+

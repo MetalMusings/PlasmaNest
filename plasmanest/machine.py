@@ -14,7 +14,7 @@ POINTS_FILE = os.path.join(os.path.expanduser("~"), ".plasmanest", "points.txt")
 HEADER = ("# PlasmaNest: sheet corners saved from QtPlasmaC\n"
           "# machine_x machine_y work_x work_y source time\n")
 SOURCES = ("torch", "laser")
-SOURCE_NAMES = {"torch": "Brännare", "laser": "Laser"}
+SOURCE_NAMES = {"torch": "Torch", "laser": "Laser"}
 
 
 class PointsError(Exception):
@@ -38,7 +38,7 @@ class Offsets:
     @property
     def name(self):
         return {1: "G54", 2: "G55", 3: "G56", 4: "G57", 5: "G58", 6: "G59",
-                7: "G59.1", 8: "G59.2", 9: "G59.3"}.get(self.g5x_index, f"G5x nr {self.g5x_index}")
+                7: "G59.1", 8: "G59.2", 9: "G59.3"}.get(self.g5x_index, f"G5x no. {self.g5x_index}")
 
     def work(self, machine):
         """Work coordinates of a machine position, as hal_glib.get_position."""
@@ -75,7 +75,7 @@ def aimed_point(actual_position, laser_on, laser_offset):
 def prefs_path(ini_path, machine_name):
     """QtPlasmaC keeps its settings in <MACHINE>.prefs next to the INI file."""
     if not machine_name:
-        raise PointsError(f"MACHINE saknas under [EMC] i {ini_path}.")
+        raise PointsError(f"MACHINE is missing under [EMC] in {ini_path}.")
     return os.path.join(os.path.dirname(ini_path), f"{machine_name.strip()}.prefs")
 
 
@@ -84,11 +84,11 @@ def read_laser_offset(path):
     prefs = configparser.ConfigParser(strict=False, interpolation=None)
     try:
         if not prefs.read(path):
-            raise PointsError(f"Kan inte läsa {path}.")
+            raise PointsError(f"Cannot read {path}.")
         x = prefs.getfloat("LASER_OFFSET", "X axis", fallback=0.0)
         y = prefs.getfloat("LASER_OFFSET", "Y axis", fallback=0.0)
     except (configparser.Error, ValueError):
-        raise PointsError(f"Ogiltig laserförskjutning i {path}.")
+        raise PointsError(f"Invalid laser offset in {path}.")
     return None if x == 0.0 and y == 0.0 else (x, y)
 
 
@@ -111,7 +111,7 @@ def parse_points(text):
             if not all(math.isfinite(v) for v in values):
                 raise ValueError
         except ValueError:
-            raise PointsError(f"Rad {number} i punktfilen går inte att läsa: {line}")
+            raise PointsError(f"Line {number} of the points file cannot be read: {line}")
         points.append(MachinePoint((values[0], values[1]), (values[2], values[3]), words[4], words[5]))
     return points
 
