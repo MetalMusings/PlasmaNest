@@ -2,9 +2,10 @@
 
 [![tests](https://github.com/MetalMusings/PlasmaNest/actions/workflows/tests.yml/badge.svg)](https://github.com/MetalMusings/PlasmaNest/actions/workflows/tests.yml)
 
-Manual nesting of G-code for [LinuxCNC](https://linuxcnc.org) /
+Manual and automatic nesting of G-code for [LinuxCNC](https://linuxcnc.org) /
 [QtPlasmaC](https://linuxcnc.org/docs/2.9/html/plasma/qtplasmac.html). Load G-code files, draw your
-own parts and holes, place them on the sheet and send one nest straight to QtPlasmaC.
+own parts and holes, place them on the sheet by hand or let **Autonest** pack them, and send one
+nest straight to QtPlasmaC.
 
 PlasmaNest runs on its own, or as a **PLASMANEST tab inside QtPlasmaC**: draw or place figures in
 the tab, go to MAIN, and the nest is in the preview, ready to cut.
@@ -21,7 +22,8 @@ polygon, copies of loaded G-code and a figure left out of the cut](docs/screensh
 - **Small holes** under 30 mm are cut at 60 % speed, with half-circle lead-in and lead-out.
 - **Autonest** packs the figures against the bottom edge of the sheet, with a gap between them and a
   margin to the edge, turning them in 90° steps where that packs them lower. Small parts go into
-  the holes of larger ones, and whatever lies inside a contour is cut first.
+  the holes of larger ones, and whatever lies inside a contour is cut first. See
+  [Autonest](#autonest).
 - **Resize by dragging** a drawn figure's outline, or type exact sizes.
 - **Sheets** of any shape: typed, drawn, or measured on the machine by jogging to its corners.
 - **Checks** for figures outside the sheet and overlapping figures, before anything is cut.
@@ -197,7 +199,7 @@ export elsewhere the button does not find the file, and PlasmaNest's status bar 
 | Draw a slot | **Draw slot**: press at a corner and drag to the opposite corner, or click both, as for a rectangle. The slot fills the box along its longer side: two half circles joined by straight sides. Then the exact **Length** (end to end) and **Width** can be typed in the panel. Turn it like any figure. |
 | Resize a drawn figure | Point at the outline of a rectangle, circle, hole circle or slot drawn in PlasmaNest: the pointer turns into a resize arrow. Drag to resize, on whole millimetres; a label shows the size, and Esc cancels. A rectangle's edge or corner moves and the opposite edges stay. A circle keeps its centre. Any hole of a hole circle sizes all its holes, and the dotted circle through the hole centres, between the holes, sizes that circle. A slot's side sets its width, and an end its length while the other end stays. Figures under about 24 pixels across can only be moved. |
 | Copy | **Copy…** or Ctrl+D, and give the number. The copies are put in free places. |
-| Autonest | **Autonest…** (or Edit → Autonest…) packs the selected figures, or all checked figures if none is selected, against the bottom edge of the sheet, largest first, each as low and then as far left as it goes. Choose the gap between figures, the margin to the sheet's edge, and whether figures may be turned 90°, 180° or 270°. Figures not selected stay put and are kept clear of; unchecked figures are neither moved nor kept clear of. A figure lying inside another, like a hole drawn in a part, moves with it. Figures that do not fit are put beside the sheet. Ctrl+Z undoes it all. Each figure counts as its convex outline, lead-ins included, so an L-shape is not interlocked with another. **Parts in holes:** a figure that fits in a hole of another, loaded or drawn in PlasmaNest, goes there before any free sheet is used, keeping the gap to the hole's edge and its lead-in. Only convex holes are used, such as circles, rectangles and slots. **Cutting order:** afterwards, every figure lying wholly inside a closed contour of another figure is cut before it, while the sheet round it is still attached: a part in a hole before the hole, and a hole drawn in a part before the part's outline. What lies inside is pulled forward to just before the contour; the rest of the order stays as it was. The order inside one loaded G-code file is the file's own. |
+| Autonest | **Autonest…** or Edit → Autonest… packs the selected figures, or all checked figures, against the bottom edge of the sheet. See [Autonest](#autonest). |
 | Delete | **Delete** (selected figures) or **Delete the whole G-code** (all copies of the file). |
 | Cutting order | The list shows the order. Change it with **Cut earlier** and **Cut later**. |
 | Choose what to cut | Uncheck a figure in the list to leave it out: it stays in the nest, drawn grey and dashed, but is neither exported nor sent to MAIN. It is not checked for overlaps or the sheet's edge either, so it can wait beside the sheet. The check boxes are saved in the project, copies get their original's, and Space toggles the selected row. |
@@ -206,20 +208,75 @@ export elsewhere the button does not find the file, and PlasmaNest's status bar 
 
 Figures outside the sheet turn **red** and overlapping figures turn **orange**. Overlaps stop the
 nest going to MAIN and are asked about before an export, unless **Allow overlapping figures** is
-checked: then they stay orange but go through. The check box is saved with the project. A figure inside a
-hole in another does not count as overlapping, also when the hole is drawn in PlasmaNest, nor do holes drawn in PlasmaNest (holes and hole
-circles and slots) that lie wholly in another figure's material. The check uses the programmed path, so the kerf is
-not included: leave enough distance yourself.
+checked: then they stay orange but go through. The check box is saved with the project. A figure
+inside a hole in another does not count as overlapping, also when the hole is drawn in PlasmaNest,
+nor do holes drawn in PlasmaNest (holes, hole circles and slots) that lie wholly in another
+figure's material. The check uses the programmed path, so the kerf is not included: leave enough
+distance yourself.
 
 The sheet can have any shape as long as its edges do not cross, for example an offcut with a notch.
 It need not lie at G-code X0 Y0, which is shown with a purple cross, but the corners' coordinates
 must match how the sheet lies in the machine. The sheet's shape is only a check: it does not change
 the G-code, and QtPlasmaC does not know about it.
 
-The sheet can have any shape as long as its edges do not cross, for example an offcut with a notch.
-It need not lie at G-code X0 Y0, which is shown with a purple cross, but the corners' coordinates
-must match how the sheet lies in the machine. The sheet's shape is only a check: it does not change
-the G-code, and QtPlasmaC does not know about it.
+### Autonest
+
+**Autonest…** (in the figure panel, or Edit → Autonest…) places figures automatically. It packs
+them against the bottom edge of the sheet, the edge at the lowest Y, so that the rest of the sheet
+stays in one piece for later.
+
+**What it moves**
+
+- With figures selected, only those are packed. The other checked figures stay where they are, and
+  the packed ones keep clear of them.
+- With nothing selected, all checked figures are packed.
+- Unchecked figures are never moved and never kept clear of: they are not cut.
+- A figure lying inside another, such as a hole drawn in a part, moves together with it, also if
+  only one of them is selected.
+
+**Settings**
+
+| Setting | Meaning |
+|---|---|
+| Gap between figures | The least distance between the cut paths of two figures, lead-ins included. Allow for the kerf: the gap is measured between programmed paths. |
+| Margin to the sheet edge | The least distance from any cut path to the sheet's edge. |
+| Turn figures | Allows turns of 90°, 180° and 270° when that packs a figure lower. A figure is only turned if it gains something. |
+
+The dialog remembers the values until PlasmaNest is closed. At first both distances are 10 mm.
+
+**How figures are placed**
+
+- The largest figure goes first. Each figure goes as low as it can, and then as far left as it can.
+  Smaller figures fill the gaps the larger ones leave, also between and beside them.
+- Each figure counts as its convex outline, lead-ins included. The gap is therefore always kept,
+  often by a few tenths of a millimetre more, but concave parts are not interlocked: an L-shape
+  is not tucked into the corner of another.
+- Sheets of any shape work, such as an offcut with a notch.
+- Figures that do not fit are put beside the sheet, to the right, where they show red. The status
+  bar tells how many.
+
+**Parts in holes**
+
+Before any free sheet is used, Autonest tries the holes of the figures already on the sheet. A
+figure that fits in a hole goes there, keeping the gap to the hole's edge and to everything else
+cut inside the hole, such as the hole's lead-in. This works for holes in loaded G-code and for holes
+drawn in PlasmaNest. Only convex holes are used: circles, rectangles, slots and the like. A figure
+put in a hole can take still smaller figures in its own holes.
+
+**Cutting order**
+
+After packing, the cutting order is sorted from the inside out. Every figure lying wholly inside a
+closed contour of another figure is cut before it, while the sheet round it is still attached and
+cannot drop or tip:
+
+- a part in a hole is cut before the hole
+- a hole drawn in a part is cut before the part's outline.
+
+What lies inside is moved forward to just before its contour, and the rest of the order stays as it
+was. The order inside one loaded G-code file is the file's own.
+
+Ctrl+Z undoes the whole Autonest, the cutting order included. Check the result in QtPlasmaC's
+preview before cutting, as for any nest.
 
 ### Figures drawn in PlasmaNest
 
