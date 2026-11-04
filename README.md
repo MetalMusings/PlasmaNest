@@ -19,6 +19,8 @@ polygon, copies of loaded G-code and a figure left out of the cut](docs/screensh
 - **Draw figures:** rectangles, circles, hole circles, slots and polygons, as parts or holes. The
   kerf comes from QtPlasmaC's material file, and lead-ins are placed by pointing at the outline.
 - **Small holes** under 30 mm are cut at 60 % speed, with half-circle lead-in and lead-out.
+- **Autonest** packs the figures against the bottom edge of the sheet, with a gap between them and a
+  margin to the edge, turning them in 90° steps where that packs them lower.
 - **Resize by dragging** a drawn figure's outline, or type exact sizes.
 - **Sheets** of any shape: typed, drawn, or measured on the machine by jogging to its corners.
 - **Checks** for figures outside the sheet and overlapping figures, before anything is cut.
@@ -194,6 +196,7 @@ export elsewhere the button does not find the file, and PlasmaNest's status bar 
 | Draw a slot | **Draw slot**: press at a corner and drag to the opposite corner, or click both, as for a rectangle. The slot fills the box along its longer side: two half circles joined by straight sides. Then the exact **Length** (end to end) and **Width** can be typed in the panel. Turn it like any figure. |
 | Resize a drawn figure | Point at the outline of a rectangle, circle, hole circle or slot drawn in PlasmaNest: the pointer turns into a resize arrow. Drag to resize, on whole millimetres; a label shows the size, and Esc cancels. A rectangle's edge or corner moves and the opposite edges stay. A circle keeps its centre. Any hole of a hole circle sizes all its holes, and the dotted circle through the hole centres, between the holes, sizes that circle. A slot's side sets its width, and an end its length while the other end stays. Figures under about 24 pixels across can only be moved. |
 | Copy | **Copy…** or Ctrl+D, and give the number. The copies are put in free places. |
+| Autonest | **Autonest…** (or Edit → Autonest…) packs the selected figures, or all checked figures if none is selected, against the bottom edge of the sheet, largest first, each as low and then as far left as it goes. Choose the gap between figures, the margin to the sheet's edge, and whether figures may be turned 90°, 180° or 270°. Figures not selected stay put and are kept clear of; unchecked figures are neither moved nor kept clear of. A figure lying inside another, like a hole drawn in a part, moves with it. Figures that do not fit are put beside the sheet. The cutting order does not change, and Ctrl+Z undoes it all. Each figure counts as its convex outline, lead-ins included, so an L-shape is not interlocked with another and nothing is put inside a hole. |
 | Delete | **Delete** (selected figures) or **Delete the whole G-code** (all copies of the file). |
 | Cutting order | The list shows the order. Change it with **Cut earlier** and **Cut later**. |
 | Choose what to cut | Uncheck a figure in the list to leave it out: it stays in the nest, drawn grey and dashed, but is neither exported nor sent to MAIN. It is not checked for overlaps or the sheet's edge either, so it can wait beside the sheet. The check boxes are saved in the project, copies get their original's, and Space toggles the selected row. |
@@ -301,6 +304,7 @@ windows. On Windows one test is skipped in windowless mode.
 | `plasmanest/gcode.py` | Reads G-code into moves in mm, and refuses what cannot be moved safely. |
 | `plasmanest/nest.py` | Placements, the sheet, the export and project files. |
 | `plasmanest/shapes.py` | The figures drawn in PlasmaNest, written as G-code. |
+| `plasmanest/autonest.py` | Packs figures against the bottom edge of the sheet. |
 | `plasmanest/gui.py` | The user interface. |
 | `plasmanest/live.py` | The files the tab hands to QtPlasmaC. |
 | `plasmanest/machine.py`, `save_point.py`, `point_button.py` | Sheet corners from the machine. |

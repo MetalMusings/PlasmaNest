@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox
                              QTableWidgetItem, QToolTip, QVBoxLayout, QWidget)
 
 from . import live, machine
+from .autonest import autonest, group_figures
 from .gcode import GCodeError, Program, format_number, load_program
 from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
 from .materials import available_materials, machine_work_area
@@ -1066,6 +1067,43 @@ class CopyDialog(QDialog):
         form.addRow(buttons)
 
 
+class AutonestDialog(QDialog):
+    """The settings for packing figures against the sheet's bottom edge."""
+
+    def __init__(self, parent, settings, selected):
+        super().__init__(parent)
+        self.setWindowTitle("Autonest")
+        form = QFormLayout(self)
+        which = "the selected figures" if selected else "all figures to cut"
+        text = QLabel(f"Packs {which} against the bottom edge of the sheet, largest first. A figure "
+                      "lying inside another, like a hole drawn in a part, moves with it. Figures that "
+                      "do not fit are put beside the sheet.")
+        text.setWordWrap(True)
+        form.addRow(text)
+        self.gap = QDoubleSpinBox()
+        self.gap.setRange(0, 1000)
+        self.gap.setDecimals(1)
+        self.gap.setSuffix(" mm")
+        self.gap.setValue(settings["gap"])
+        form.addRow("Gap between figures:", self.gap)
+        self.margin = QDoubleSpinBox()
+        self.margin.setRange(0, 1000)
+        self.margin.setDecimals(1)
+        self.margin.setSuffix(" mm")
+        self.margin.setValue(settings["margin"])
+        form.addRow("Margin to the sheet edge:", self.margin)
+        self.turn = QCheckBox("Turn figures 90°, 180° or 270° when it packs them lower")
+        self.turn.setChecked(settings["turn"])
+        form.addRow(self.turn)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def settings(self):
+        return {"gap": self.gap.value(), "margin": self.margin.value(), "turn": self.turn.isChecked()}
+
+
 class CornerDialog(QDialog):
     """Type the corners of the sheet in order around its edge."""
 
@@ -1456,6 +1494,7 @@ class MainWindow(QMainWindow):
         self.materials = available_materials()
         self.rectangle_defaults = {"inside": False, "material": None, "kerf": 0.0, "leadin": 0.0}
         self.hole_circle_defaults = {"holes": 4, "hole_diameter": 10.0}
+        self.autonest_settings = {"gap": PART_GAP, "margin": PART_GAP, "turn": True}
         self._build_panel()
         self._build_actions()
         self.scene_.selectionChanged.connect(self.selection_changed)
@@ -1505,6 +1544,9 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.load_button = self._button("Load…", self.load_files, row)
         self.copy_button = self._button("Copy…", self.copy_selection, row)
+        self.autonest_button = self._button("Autonest…", self.autonest_dialog, row)
+        self.autonest_button.setToolTip("Pack the selected figures, or all figures to cut, against the "
+                                        "bottom edge of the sheet.")
         parts_layout.addLayout(row)
         row = QHBoxLayout()
         self.rectangle_shape_button = self._button("Draw rectangle", self.toggle_rectangle, row)
@@ -1740,6 +1782,7 @@ class MainWindow(QMainWindow):
         action(edit_menu, "&Delete figure", self.delete_selection, QKeySequence.Delete)
         action(edit_menu, "Select &all", self.select_all, QKeySequence.SelectAll)
         action(edit_menu, "R&otate", lambda: self.rotate_selection(self.rotate_step.value()), "R")
+        action(edit_menu, "Auto&nest…", self.autonest_dialog)
 
         action(view_menu, "&Fit to window", self.fit_view, "F", True)
 
@@ -2320,6 +2363,52 @@ class MainWindow(QMainWindow):
                 self.place_free(placement)
                 added.append(self.add_part(placement))
         self.after_change(added)
+
+    def autonest_dialog(self):
+        if not self.cut_parts():
+            self.statusBar().showMessage("There are no figures to cut to autonest.", 5000)
+            return
+        dialog = AutonestDialog(self, self.autonest_settings,
+                                any(p.placement.cut for p in self.selected_parts()))
+        if dialog.exec_() == QDialog.Accepted:
+            self.autonest_settings = dialog.settings()
+            self.autonest_parts(**self.autonest_settings)
+
+    def autonest_parts(self, gap=PART_GAP, margin=PART_GAP, turn=True):
+        """Pack the selected figures to cut, or all of them, against the sheet's bottom edge. The
+        other figures to cut stay where they are; figures not cut are neither moved nor avoided."""
+        cut = self.cut_parts()
+        selected = {id(p) for p in self.selected_parts()}
+        # A hole drawn in a part moves with the part, also when only one of them is selected.
+        moving = []
+        for group in group_figures([p.placement for p in cut]):
+            members = [cut[i] for i in group]
+            if not selected or any(id(p) in selected for p in members):
+                moving += members
+        if not moving:
+            return
+        fixed = [p.placement for p in cut if p not in moving]
+        self.view.stop_drawing()
+        # Many different figures can take a few seconds.
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            moves, unplaced = autonest(self.sheet, [p.placement for p in moving], fixed, gap, margin, turn)
+        except ValueError as error:
+            QMessageBox.warning(self, APP_NAME, str(error))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        parts = {id(p.placement): p for p in moving}
+        for move in moves:
+            part = parts[id(move.placement)]
+            part.set_angle(move.angle)
+            part.set_center(move.x, move.y)
+        self.after_change(moving)
+        message = f"Autonest: {plural(len(moving) - len(unplaced), 'figure')} packed"
+        if unplaced:
+            message += f", {len(unplaced)} did not fit and lie beside the sheet"
+        self.statusBar().showMessage(message + ".", 10000)
+        return moves, unplaced
 
     def delete_selection(self):
         selected = self.selected_parts()

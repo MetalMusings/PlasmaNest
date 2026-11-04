@@ -1573,3 +1573,36 @@ def test_a_new_sheet_is_as_large_as_the_machines_work_area(app, tmp_path, monkey
         win.saved_state = win.undo_stack[win.undo_index]
         win.close()
         sip.delete(win)
+
+
+def test_autonest_packs_figures_against_the_bottom_edge(window):
+    window.set_sheet(Sheet.rectangle(693, 2190))
+    window.load_paths([FLANGE, WASHER, WASHER, FLANGE])
+    flange, washer, kept, other = window.parts
+    kept.placement.cut = False
+    before_kept = (kept.placement.x, kept.placement.y)
+    for part in window.parts:
+        part.moveBy(0, 1500)
+    window.refresh()
+    window.commit()
+    moved_state = [(p.placement.x, p.placement.y, p.placement.angle) for p in window.parts]
+
+    window.scene_.clearSelection()
+    flange.setSelected(True)
+    window.autonest_parts(gap=10, margin=10, turn=True)
+    assert flange.placement.bounds()[1] == pytest.approx(10, abs=0.5)
+    assert (washer.placement.y, other.placement.y) == (moved_state[1][1], moved_state[3][1])
+
+    window.scene_.clearSelection()
+    window.autonest_parts(gap=10, margin=10, turn=True)
+    window.refresh()
+    assert (kept.placement.x, kept.placement.y) == (before_kept[0], before_kept[1] + 1500)
+    assert window.overlap_count == 0 and window.outside_count == 0
+    for part in (flange, washer, other):
+        assert part.placement.bounds()[3] < 200
+        assert (part.x(), part.y()) == (part.placement.x, part.placement.y)
+
+    window.undo()
+    window.undo()
+    assert [(p.placement.x, p.placement.y, p.placement.angle) for p in window.parts] == \
+        [pytest.approx(s) for s in moved_state]
