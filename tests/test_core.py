@@ -653,3 +653,56 @@ def test_slot_leadin_positions_and_refusals():
         Slot(0, 0, 80, 20, inside=True, kerf=1.5, leadin=19).gcode()
     with pytest.raises(ValueError, match="too small"):
         Slot(0, 0, 80, 1.2, inside=True, kerf=1.5).gcode()
+
+
+L_SHAPE = ((0, 0), (100, 0), (100, 40), (40, 40), (40, 100), (0, 100))
+
+
+def test_closed_polygon_is_cut_round_its_kerf_offset_either_way_round():
+    from plasmanest.shapes import Polygon, shape_of
+    for points in (L_SHAPE, tuple(reversed(L_SHAPE))):
+        for inside, area in ((False, 102 * 102 - 60 * 60), (True, 98 * 98 - 60 * 60)):
+            p = Polygon(points, inside=inside, kerf=2, leadin=5, edge=1, at=0.5)
+            program = p.program()
+            assert shape_of(program) == p
+            cut, = [q for q in program.paths if q.kind == "cut"]
+            path = cut.points[1:]
+            signed = sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(path, path[1:])) / 2
+            assert signed == pytest.approx(area if inside else -area)  # holes anticlockwise, parts clockwise
+            start, point = cut.points[0], cut.points[1]
+            assert math.hypot(start[0] - point[0], start[1] - point[1]) == pytest.approx(5)
+    assert Polygon(L_SHAPE).program().name == "Polygon, 6 points"
+    assert Polygon(L_SHAPE, inside=True).program().name == "Polygon hole, 6 points"
+
+
+def test_open_polygon_is_a_line_from_either_end_with_a_straight_lead_in():
+    from plasmanest.shapes import Polygon, shape_of
+    p = Polygon(((0, 0), (50, 0), (50, 50)), closed=False, kerf=2, leadin=5)
+    program = p.program()
+    assert shape_of(program) == p and program.name == "Polyline, 3 points"
+    cut, = [q for q in program.paths if q.kind == "cut"]
+    assert cut.points == [(-5, 0), (0, 0), (50, 0), (50, 50)]  # no kerf offset; lead-in in line
+    last = p.with_leadin_at((1, 0.0))
+    cut, = [q for q in last.program().paths if q.kind == "cut"]
+    assert cut.points == [(50, 55), (50, 50), (50, 0), (0, 0)]  # from the other end
+    assert shape_of(last.program()) == last
+    assert p.nearest((49, 52)) == ((1, 0.0), pytest.approx(5 ** 0.5)) and p.nearest((-3, 1))[0] == (0, 0.0)
+    assert p.describe_leadin((1, 0.0)) == "from the last point"
+    spiral = ((0, 0), (100, 0), (100, 50), (-30, 50), (-30, -10))
+    with pytest.raises(ValueError, match="crosses the line"):
+        Polygon(spiral, closed=False, leadin=40).gcode()
+    Polygon(spiral, closed=False, leadin=20).gcode()
+
+
+def test_impossible_polygons_are_refused():
+    from plasmanest.shapes import Polygon
+    for settings, message in (
+            (dict(points=((0, 0), (10, 10), (10, 0), (0, 10))), "must not cross"),
+            (dict(points=((0, 0), (0, 0.5), (10, 10))), "less than 1 mm"),
+            (dict(points=((0, 0), (10, 0))), "at least 3"),
+            (dict(points=((0, 0),), closed=False), "at least 2"),
+            (dict(points=L_SHAPE, inside=True, kerf=2, leadin=50, edge=0), "does not fit in the hole"),
+            (dict(points=L_SHAPE, kerf=2, leadin=5, edge=2, at=1.0), "does not fit there"),  # inner corner
+            (dict(points=((0, 0), (100, 0), (100, 3), (0, 3)), inside=True, kerf=4), "kerf 4 mm does not fit")):
+        with pytest.raises(ValueError, match=message):
+            Polygon(**settings).gcode()

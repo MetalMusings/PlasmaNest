@@ -7,6 +7,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from PyQt5 import sip
 from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt
 from PyQt5.QtGui import QMouseEvent, QWheelEvent
 from PyQt5.QtTest import QTest
@@ -35,6 +36,9 @@ def window(app):
     yield win
     win.saved_state = win.undo_stack[win.undo_index]
     win.close()
+    # Destroyed now, not when the garbage collector gets to it in the middle of a later test.
+    win.updating_ui = True
+    sip.delete(win)
 
 
 def to_view(win, x, y):
@@ -1442,3 +1446,105 @@ def test_view_is_fitted_again_when_shown(window):
     view.show()
     centre = view.mapToScene(view.viewport().rect().center())
     assert abs(centre.x()) < 5 and abs(centre.y()) < 5
+
+
+def click_at(win, xy):
+    mouse(win, QEvent.MouseMove, xy, buttons=Qt.NoButton, button=Qt.NoButton)
+    mouse(win, QEvent.MouseButtonPress, xy)
+    mouse(win, QEvent.MouseButtonRelease, xy, buttons=Qt.NoButton)
+
+
+def test_draw_a_closed_polygon_by_clicking_back_on_the_first_point(window):
+    from plasmanest.shapes import Polygon, shape_of
+    zoom_in(window, 200, 200)
+    window.toggle_polygon()
+    assert window.polygon_shape_button.text() == "Cancel polygon" and window.draw_button.text() == "Draw"
+    for xy in ((150.2, 160), (250, 160), (250, 240.4), (200, 240)):
+        click_at(window, xy)
+    QTest.keyClick(window.view, Qt.Key_Backspace)  # takes back the last point
+    click_at(window, (150, 240))
+    click_at(window, (150.5, 160.5))  # the first point again: closed
+    part, = window.parts
+    assert shape_of(part.placement.program) == Polygon(((150, 160), (250, 160), (250, 240), (150, 240)))
+    assert window.polygon_shape_button.text() == "Draw polygon" and window.view.drawing is None
+    assert window.rect_box.title() == "Polygon" and window.poly_closed.isChecked()
+    assert window.poly_table.rowCount() == 4 and window.poly_table.item(2, 1).text() == "240.00"
+    assert window.pos_x_label.text() == "X (first point):" and window.pos_x.value() == 150
+
+
+def test_draw_an_open_polygon_and_finish_with_enter_or_a_double_click(window):
+    from plasmanest.shapes import Polygon, shape_of
+    zoom_in(window, 200, 200)
+    window.toggle_polygon()
+    for xy in ((150, 160), (250, 160), (250, 240)):
+        click_at(window, xy)
+    QTest.keyClick(window.view, Qt.Key_Return)
+    assert shape_of(window.parts[0].placement.program) == Polygon(((150, 160), (250, 160), (250, 240)),
+                                                                  closed=False)
+    assert not window.poly_closed.isChecked() and not window.rect_kerf.isEnabled()
+    assert window.rect_leadin.isEnabled() and window.leadin_button.isEnabled()
+    assert window.parts[0].fill_path.isEmpty()  # a line has no inside: no overlaps
+    window.toggle_polygon()
+    for xy in ((150, 260), (250, 260)):
+        click_at(window, xy)
+    mouse(window, QEvent.MouseButtonDblClick, (250, 260))
+    assert shape_of(window.parts[1].placement.program).points == ((150, 260), (250, 260))
+    # Escape cancels, and the sheet's own drawing is untouched.
+    window.toggle_polygon()
+    click_at(window, (100, 100))
+    QTest.keyClick(window.view, Qt.Key_Escape)
+    assert window.view.drawing is None and len(window.parts) == 2 and window.sheet.is_rectangle
+
+
+def test_polygon_points_change_in_the_table_and_by_dragging(window):
+    from plasmanest.shapes import Polygon, shape_of
+    zoom_in(window, 200, 200)
+    window.add_shape(Polygon(((150, 160), (250, 160), (250, 240), (150, 240)), kerf=1.5).program())
+    window.parts[0].setSelected(True)
+    window.angle.setValue(90)  # turned about the first point: the table shows where the points are
+    assert (window.poly_table.item(1, 0).text(), window.poly_table.item(1, 1).text()) == ("150.00", "260.00")
+    window.poly_table.item(1, 1).setText("280")
+    part = window.parts[0]
+    assert part.placement.map_point(shape_of(part.placement.program).points[1]) == pytest.approx((150, 280))
+    assert part.placement.map_point((150, 160)) == pytest.approx((150, 160))  # the others stay
+    window.poly_table.item(1, 0).setText("abc")
+    assert "Row 2" in window.rect_error.text() and window.poly_table.item(1, 0).text() == "150.00"
+    # Drag the third point, at (70, 260) on the sheet once turned.
+    mouse(window, QEvent.MouseMove, (70.5, 260), buttons=Qt.NoButton, button=Qt.NoButton)
+    assert window.view.viewport().cursor().shape() == Qt.CrossCursor
+    drag_edge(window, (70.5, 260), (60, 250))
+    part = window.parts[0]
+    assert part.placement.map_point(shape_of(part.placement.program).points[2]) == pytest.approx((60, 250))
+    # Add a point halfway along the edge after the chosen row, then take it away again.
+    window.poly_table.setCurrentCell(0, 0)
+    window.add_polygon_point()
+    assert len(shape_of(window.parts[0].placement.program).points) == 5
+    window.poly_table.setCurrentCell(1, 0)
+    window.remove_polygon_point()
+    assert len(shape_of(window.parts[0].placement.program).points) == 4
+    # Open and closed again.
+    window.poly_closed.setChecked(False)
+    assert not shape_of(window.parts[0].placement.program).closed
+    window.poly_closed.setChecked(True)
+    assert shape_of(window.parts[0].placement.program).closed
+    window.undo()
+    assert not shape_of(window.parts[0].placement.program).closed
+
+
+def test_place_lead_in_chooses_which_end_an_open_polygon_starts_from(window):
+    from plasmanest.shapes import Polygon, shape_of
+    zoom_in(window, 200, 200)
+    window.add_shape(Polygon(((150, 160), (250, 160), (250, 240)), closed=False, leadin=5).program())
+    window.parts[0].setSelected(True)
+    window.place_leadin()
+    mouse(window, QEvent.MouseMove, (252, 238), buttons=Qt.NoButton, button=Qt.NoButton)
+    assert window.view.leadin_choice == (1, 0.0) and "from the last point" in window.view.label.text
+    assert not window.view.draft.path().isEmpty()
+    mouse(window, QEvent.MouseButtonPress, (252, 238))
+    line = shape_of(window.parts[0].placement.program)
+    assert line.edge == 1
+    cut, = [p for p in window.parts[0].placement.program.paths if p.kind == "cut"]
+    assert cut.points[0] == pytest.approx((250, 245)) and cut.points[-1] == pytest.approx((150, 160))
+    window.poly_closed.setChecked(True)  # closed, the lead-in starts afresh on the first edge
+    closed = shape_of(window.parts[0].placement.program)
+    assert closed.closed and (closed.edge, closed.at) == (0, 0.5)

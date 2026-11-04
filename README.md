@@ -43,6 +43,7 @@ The files in `samples/` are good for trying it out.
 | Draw a rectangle | **Draw rectangle**: a label at the pointer shows X and Y. Press at a corner and drag to the opposite corner, or click both. The label shows width × height. The corners land on whole millimetres, and Esc cancels. Then the exact **Width** and **Height** can be typed in the panel: type the width, press Tab, type the height and press Enter. The first corner stays put. |
 | Draw a circle | **Draw circle**: press at the centre and drag out to the edge, or click the centre and then the edge. The label shows X and Y and then the diameter in whole millimetres. The exact **Diameter** is typed in the panel. |
 | Draw a hole circle | **Draw hole circle**: press at the centre and drag out to the hole centres, or click the centre and then a hole centre. The new hole circle gets the number and size of holes used last (at first 4 × Ø10). |
+| Draw a polygon | **Draw polygon**, and click the points, on whole millimetres; Shift gives straight edges and Backspace takes back the latest point. A click on the first point closes it: a part or a hole, like a rectangle. A double click or Enter leaves it open: a line cut from one end to the other, with no kerf offset and no fill, so it is never counted as overlapping. Its lead-in carries straight on back from the start end, so the pierce is off the line; **Place lead-in** chooses the end it starts from. Esc cancels. Afterwards the panel lists the points as they lie on the sheet: type new values, add a point halfway along the edge after the chosen row, remove one, or close and open it. A point can also be dragged in the view, where the pointer turns into a cross. |
 | Draw a slot | **Draw slot**: press at a corner and drag to the opposite corner, or click both, as for a rectangle. The slot fills the box along its longer side: two half circles joined by straight sides. Then the exact **Length** (end to end) and **Width** can be typed in the panel. Turn it like any figure. |
 | Resize a drawn figure | Point at the outline of a rectangle, circle, hole circle or slot drawn in PlasmaNest: the pointer turns into a resize arrow. Drag to resize, on whole millimetres; a label shows the size, and Esc cancels. A rectangle's edge or corner moves and the opposite edges stay. A circle keeps its centre. Any hole of a hole circle sizes all its holes, and the dotted circle through the hole centres, between the holes, sizes that circle. A slot's side sets its width, and an end its length while the other end stays. Figures under about 24 pixels across can only be moved. |
 | Copy | **Copy…** or Ctrl+D, and give the number. The copies are put in free places. |
@@ -143,8 +144,10 @@ When a drawn figure is selected, the panel shows the **Rectangle**, **Circle**, 
 | Lead-in | Length in mm, 0 or more. A straight line square to the edge (radial for circles), starting in the scrap. |
 | Place lead-in | Point at or near the figure and click where the lead-in should be. On a hole circle, point at any hole: all holes get their lead-in at the same angle. |
 
-- The **X** and **Y** fields give the rectangle's drawn corner and the centre of a circle, hole
-  circle or slot, not the path's outer size.
+- The **X** and **Y** fields give the rectangle's drawn corner, the centre of a circle, hole
+  circle or slot and a polygon's first point, not the path's outer size.
+- A closed polygon's kerf offset keeps sharp corners. A kerf or lead-in that does not fit the
+  shape is refused, as is a polygon whose edges cross.
 - Parts are cut clockwise and holes counter-clockwise, circles and slot ends with G2 and G3.
 - Holes under 30 mm are cut at 60 % of the material's speed. They start at the centre with a half
   circle out to the edge and end with a half circle back in, at most 2 mm long, with the torch on.

@@ -5,7 +5,9 @@ import os
 import signal
 import sys
 import time
+from dataclasses import replace
 
+from PyQt5 import sip
 from PyQt5.QtCore import (QEvent, QLocale, QObject, QPoint, QPointF, QRectF, QSize, QSocketNotifier, Qt, QTimer,
                           pyqtSignal)
 from PyQt5.QtGui import (QBrush, QColor, QFontMetrics, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPainterPathStroker,
@@ -22,7 +24,8 @@ from .gcode import GCodeError, Program, format_number, load_program
 from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
 from .materials import available_materials
 from .theme import qtplasmac_colors, stylesheet
-from .shapes import OVERCUT, SMALL_HOLE, SMALL_HOLE_SPEED, Circle, HoleCircle, Rectangle, Slot, shape_of
+from .shapes import (OVERCUT, SMALL_HOLE, SMALL_HOLE_SPEED, Circle, HoleCircle, Polygon, Rectangle, Slot,
+                     shape_of)
 
 APP_NAME = "PlasmaNest"
 PART_GAP = 10.0        # mm between figures placed automatically
@@ -258,6 +261,7 @@ class PartItem(QGraphicsItem):
                              self.drawn_shape.cy - placement.program.center[1])
             self.guide_path.addEllipse(centre, self.drawn_shape.diameter / 2, self.drawn_shape.diameter / 2)
         program = placement.program
+        drawn = self.drawn_shape
         cx, cy = program.center
         self.cut_path = QPainterPath()
         self.fill_path = QPainterPath()  # the closed contours: the material, without lead-ins
@@ -267,8 +271,9 @@ class PartItem(QGraphicsItem):
             points = [QPointF(x - cx, y - cy) for x, y in path.points]
             if path.kind == "cut":
                 self.cut_path.addPolygon(QPolygonF(points))
-                for start, end in closed_loops(path.points):
-                    self.fill_path.addPolygon(QPolygonF(points[start:end + 1]))
+                if not (isinstance(drawn, Polygon) and not drawn.closed):  # a line has no inside
+                    for start, end in closed_loops(path.points):
+                        self.fill_path.addPolygon(QPolygonF(points[start:end + 1]))
             else:
                 self.rapid_path.addPolygon(QPolygonF(points))
         self.rect = self.cut_path.boundingRect()
@@ -443,6 +448,7 @@ class NestView(QGraphicsView):
         self.resize_drag = None
         self.grip_cursor = False
         self.drawing = None
+        self.drawing_target = "sheet"  # or "polygon": a figure clicked out like the sheet
         self.draft = QGraphicsPathItem()
         self.draft.setPen(cosmetic_pen(COLOR_DRAFT, 2.0))
         self.draft.setAcceptedMouseButtons(Qt.NoButton)
@@ -458,10 +464,11 @@ class NestView(QGraphicsView):
 
     # ------------------------------------------------------------ polygon drawing
 
-    def start_drawing(self):
+    def start_drawing(self, target="sheet"):
         if self.shape_mode is not None:
             self.stop_shape()
         self.scene().clearSelection()
+        self.drawing_target = target
         self.drawing = []
         self.setCursor(Qt.CrossCursor)
         self.setFocus()
@@ -471,6 +478,9 @@ class NestView(QGraphicsView):
         self.drawing = None
         self.unsetCursor()
         self.draft.setPath(QPainterPath())
+        if self.drawing_target == "polygon":
+            self.drawing_target = "sheet"
+            self.window_.update_shape_panel()
 
     def draft_point(self, pos, modifiers):
         """Scene position of a corner: whole mm, with Shift straight from the previous corner."""
@@ -499,7 +509,10 @@ class NestView(QGraphicsView):
         first = self.mapFromScene(QPointF(*self.drawing[0]))
         return math.hypot(pos.x() - first.x(), pos.y() - first.y()) <= CLOSE_POLYGON_RADIUS
 
-    def finish_drawing(self):
+    def finish_drawing(self, closed=True):
+        if self.drawing_target == "polygon":
+            self.finish_polygon(closed)
+            return
         try:
             sheet = Sheet(self.drawing)
         except ValueError as error:
@@ -509,9 +522,19 @@ class NestView(QGraphicsView):
         self.stop_drawing()
         self.window_.set_sheet(sheet)
 
+    def finish_polygon(self, closed):
+        try:
+            program = self.window_.new_polygon(self.drawing, closed).program()
+        except ValueError as error:
+            # Keep the points: the last ones can be taken back with Backspace.
+            self.window_.statusBar().showMessage(str(error), 10000)
+            return
+        self.stop_drawing()
+        self.window_.add_shape(program)
+
     def drawing_key(self, event):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            self.finish_drawing()
+            self.finish_drawing(closed=self.drawing_target == "sheet")  # a polygon figure: open
         elif event.key() == Qt.Key_Escape:
             self.stop_drawing()
             self.window_.update_sheet_panel()
@@ -769,11 +792,14 @@ class NestView(QGraphicsView):
                 continue
             found = shape.grip(part.placement.unmap_point((scene.x(), scene.y())), reach)
             if found is not None:
-                return part, shape, found[0], part.placement.map_vector(found[1])
+                normal = part.placement.map_vector(found[1]) if found[1] is not None else None
+                return part, shape, found[0], normal
         return None
 
     @staticmethod
     def resize_cursor(normal):
+        if normal is None:
+            return Qt.CrossCursor  # a polygon's point, moved any way
         angle = math.degrees(math.atan2(normal[1], normal[0])) % 180.0
         if angle < 22.5 or angle >= 157.5:
             return Qt.SizeHorCursor
@@ -816,7 +842,11 @@ class NestView(QGraphicsView):
             if cut.kind == "cut":
                 path.addPolygon(QPolygonF([QPointF(*placement.map_point(p)) for p in cut.points]))
         self.draft.setPath(path)
-        self.label.set_text(shape.size_text(), scene)
+        if drag["handle"][0] == "point":
+            x, y = placement.map_point(shape.points[drag["handle"][1]])
+            self.label.set_text(f"X {format_mm(x)}   Y {format_mm(y)}", scene)
+        else:
+            self.label.set_text(shape.size_text(), scene)
 
     def end_resize(self, apply=True):
         drag, self.resize_drag = self.resize_drag, None
@@ -956,7 +986,7 @@ class NestView(QGraphicsView):
     def mouseDoubleClickEvent(self, event):
         if self.drawing is not None and event.button() == Qt.LeftButton:
             # The first click of the double click has already placed the last corner.
-            self.finish_drawing()
+            self.finish_drawing(closed=self.drawing_target == "sheet")  # a polygon figure: open
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
@@ -1480,6 +1510,11 @@ class MainWindow(QMainWindow):
         self.circle_shape_button.setToolTip("Press at the centre and drag out to the edge.")
         parts_layout.addLayout(row)
         row = QHBoxLayout()
+        self.polygon_shape_button = self._button("Draw polygon", self.toggle_polygon, row)
+        self.polygon_shape_button.setToolTip("Click the points. A click on the first point closes it; a double "
+                                             "click or Enter leaves it open.")
+        parts_layout.addLayout(row)
+        row = QHBoxLayout()
         self.hole_circle_shape_button = self._button("Draw hole circle", self.toggle_hole_circle, row)
         self.hole_circle_shape_button.setToolTip("Press at the centre and drag out to the hole centres.")
         self.slot_shape_button = self._button("Draw slot", self.toggle_slot, row)
@@ -1554,6 +1589,24 @@ class MainWindow(QMainWindow):
         self.hole_start_label = QLabel("First hole at:")
         self.hole_start_label.setToolTip("Angle from +X to the first hole. The rest follow anticlockwise.")
         rect_form.addRow(self.hole_start_label, self.hole_start)
+        self.poly_closed = QCheckBox("Closed")
+        self.poly_closed.setToolTip("Closed: a part or a hole. Open: a line cut from the first point to the "
+                                    "last, with no kerf offset and no lead-in.")
+        rect_form.addRow(self.poly_closed)
+        self.poly_table = QTableWidget(0, 2)
+        self.poly_table.setHorizontalHeaderLabels(["X (mm)", "Y (mm)"])
+        self.poly_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.poly_table.setMinimumHeight(120)
+        self.poly_table.setMaximumHeight(200)
+        self.poly_table.setToolTip("The points on the sheet. Type a new value, or drag a point in the view.")
+        rect_form.addRow(self.poly_table)
+        self.poly_buttons = QWidget()
+        buttons = QHBoxLayout(self.poly_buttons)
+        buttons.setContentsMargins(0, 0, 0, 0)
+        self.poly_add = self._button("Add point", self.add_polygon_point, buttons)
+        self.poly_add.setToolTip("A new point halfway along the edge after the chosen row.")
+        self.poly_remove = self._button("Remove point", self.remove_polygon_point, buttons)
+        rect_form.addRow(self.poly_buttons)
         self.rect_material = QComboBox()
         self.rect_material.addItem("Active in QtPlasmaC", None)
         for material in self.materials:
@@ -1583,6 +1636,8 @@ class MainWindow(QMainWindow):
                      self.rect_leadin):
             spin.editingFinished.connect(self.rectangle_edited)
         self.hole_count.valueChanged.connect(lambda value: self.rectangle_edited())
+        self.poly_closed.toggled.connect(lambda checked: self.rectangle_edited())
+        self.poly_table.itemChanged.connect(self.polygon_point_edited)
         for combo in (self.rect_material, self.rect_side):
             combo.currentIndexChanged.connect(lambda index: self.rectangle_edited())
         self.rect_box = rect_box
@@ -1755,13 +1810,16 @@ class MainWindow(QMainWindow):
                 return
             round_shape = isinstance(shape, (Circle, HoleCircle))
             hole_circle = isinstance(shape, HoleCircle)
-            self.rect_box.setTitle({Circle: "Circle", HoleCircle: "Hole circle", Slot: "Slot"}.get(type(shape),
-                                                                                                "Rectangle"))
+            self.rect_box.setTitle({Circle: "Circle", HoleCircle: "Hole circle", Slot: "Slot",
+                                    Polygon: "Polygon"}.get(type(shape), "Rectangle"))
+            polygon = isinstance(shape, Polygon)
             slot = isinstance(shape, Slot)
             self.size_w_label.setText("Length:" if slot else "Width:")
             self.size_h_label.setText("Width:" if slot else "Height:")
             for widget in (self.size_w_label, self.size_w, self.size_h_label, self.size_h):
-                widget.setVisible(not round_shape)
+                widget.setVisible(not round_shape and not polygon)
+            for widget in (self.poly_closed, self.poly_table, self.poly_buttons):
+                widget.setVisible(polygon)
             for widget in (self.size_d_label, self.size_d):
                 widget.setVisible(round_shape)
             self.size_d_label.setText("Circle diameter:" if hole_circle else "Diameter:")
@@ -1784,6 +1842,9 @@ class MainWindow(QMainWindow):
             sizes = ((self.size_d, shape.diameter),)
         elif isinstance(shape, Slot):
             sizes = ((self.size_w, shape.length), (self.size_h, shape.width))
+        elif isinstance(shape, Polygon):
+            sizes = ()
+            self._fill_polygon_points(shape)
         else:
             sizes = ((self.size_w, shape.width), (self.size_h, shape.height))
         for spin, value in sizes + ((self.rect_kerf, shape.kerf), (self.rect_leadin, shape.leadin)):
@@ -1797,11 +1858,86 @@ class MainWindow(QMainWindow):
         self.rect_side.setCurrentIndex(1 if shape.inside else 0)
         self.rect_kerf.setEnabled(shape.material is None or self.material_kerf(shape.material) is None)
         small_hole = isinstance(shape, (Circle, HoleCircle)) and shape.small_hole
+        line = isinstance(shape, Polygon) and not shape.closed  # no inside: no side or kerf
+        if line:
+            self.rect_kerf.setEnabled(False)
+        self.rect_side.setEnabled(not line)
         self.rect_leadin.setEnabled(not small_hole)
         self.rect_leadin.setToolTip(
             f"Holes under {format_number(SMALL_HOLE)} mm start at the centre with a half circle, are cut at "
             f"{SMALL_HOLE_SPEED} % speed and end with a half circle, at most {format_number(OVERCUT)} mm."
             if small_hole else "")
+
+    def _fill_polygon_points(self, shape):
+        """The points as they lie on the sheet."""
+        part = getattr(self, "fields_part", None)
+        self.poly_closed.setChecked(shape.closed)
+        table = self.poly_table
+        table.blockSignals(True)
+        try:
+            table.setRowCount(len(shape.points))
+            for row, point in enumerate(shape.points):
+                x, y = part.placement.map_point(point) if part is not None else point
+                for column, value in enumerate((x, y)):
+                    table.setItem(row, column, QTableWidgetItem(f"{value:.2f}"))
+        finally:
+            table.blockSignals(False)
+
+    def selected_polygon(self):
+        part, shape = self.selected_rectangle()
+        if not isinstance(shape, Polygon) or part is not getattr(self, "fields_part", None):
+            return None, None
+        return part, shape
+
+    def polygon_point_edited(self, item):
+        """A value typed in the points table: that point moves, the others stay exactly where they are."""
+        if self.updating_ui:
+            return
+        part, shape = self.selected_polygon()
+        if shape is None:
+            return
+        row = item.row()
+        try:
+            x, y = (float(self.poly_table.item(row, column).text().strip().replace(",", "."))
+                    for column in (0, 1))
+            if not (math.isfinite(x) and math.isfinite(y)):
+                raise ValueError
+        except (ValueError, AttributeError):
+            self.rect_error.setText(f"Row {row + 1}: not a number.")
+            self.rect_error.show()
+            self.show_rectangle_fields(shape, part)
+            return
+        if self.replace_rectangle(part, shape.with_point(row, part.placement.unmap_point((x, y)))) is None:
+            self.show_rectangle_fields(shape, part)
+
+    def add_polygon_point(self):
+        """Halfway along the edge after the chosen row, or the last edge; an open polygon's last
+        row gets a point as far on again."""
+        part, shape = self.selected_polygon()
+        if shape is None:
+            return
+        points = list(shape.points)
+        rows = self.poly_table.selectionModel().selectedRows() or []
+        current = self.poly_table.currentRow()
+        row = current if current >= 0 else (rows[0].row() if rows else len(points) - 1)
+        if not shape.closed and row == len(points) - 1:
+            a, b = points[-2], points[-1]
+            new = (2 * b[0] - a[0], 2 * b[1] - a[1])
+        else:
+            a, b = points[row], points[(row + 1) % len(points)]
+            new = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+        points.insert(row + 1, (float(round(new[0])), float(round(new[1]))))
+        self.replace_rectangle(part, replace(shape, points=tuple(points)))
+
+    def remove_polygon_point(self):
+        part, shape = self.selected_polygon()
+        if shape is None:
+            return
+        row = self.poly_table.currentRow()
+        points = list(shape.points)
+        del points[row if 0 <= row < len(points) else -1]
+        edges = len(points) if shape.closed else 2  # open: the start end, 0 or 1
+        self.replace_rectangle(part, replace(shape, points=tuple(points), edge=min(shape.edge, max(edges - 1, 0))))
 
     def material_kerf(self, number):
         for material in self.materials:
@@ -1820,6 +1956,7 @@ class MainWindow(QMainWindow):
 
     POSITION_LABELS = {Rectangle: ("X (drawn corner):", "Y (drawn corner):"), Circle: ("X (centre):", "Y (centre):"),
                        HoleCircle: ("X (centre):", "Y (centre):"), Slot: ("X (centre):", "Y (centre):"),
+                       Polygon: ("X (first point):", "Y (first point):"),
                        type(None): ("X (left edge):", "Y (bottom edge):")}
 
     def update_placement_fields(self):
@@ -1864,6 +2001,11 @@ class MainWindow(QMainWindow):
         elif isinstance(shape, Slot):
             changes.update(length=self.size_w.value(), width=self.size_h.value(),
                            inside=bool(self.rect_side.currentData()))
+        elif isinstance(shape, Polygon):
+            closed = self.poly_closed.isChecked()
+            changes.update(closed=closed, inside=bool(self.rect_side.currentData()))
+            if closed != shape.closed:  # the lead-in's place means something else: start afresh
+                changes.update(edge=0, at=0.5)
         else:
             changes.update(width=self.size_w.value(), height=self.size_h.value(),
                            inside=bool(self.rect_side.currentData()))
@@ -1935,6 +2077,9 @@ class MainWindow(QMainWindow):
 
     def new_circle(self, cx, cy, diameter):
         return Circle(cx, cy, diameter, **self.figure_defaults())
+
+    def new_polygon(self, points, closed):
+        return Polygon(tuple((float(x), float(y)) for x, y in points), closed=closed, **self.figure_defaults())
 
     def new_slot(self, x0, y0, x1, y1):
         """The slot filling a drawn box, and the angle that lays it along the box's longer side."""
@@ -2245,7 +2390,7 @@ class MainWindow(QMainWindow):
     def update_sheet_panel(self):
         """Width and height edit a rectangle; for a polygon they only report its size."""
         sheet = self.sheet
-        drawing = self.view.drawing is not None
+        drawing = self.view.drawing is not None and self.view.drawing_target == "sheet"
         self.sheet_width.setValue(sheet.width)
         self.sheet_height.setValue(sheet.height)
         self.sheet_width.setEnabled(sheet.is_rectangle and not drawing)
@@ -2284,12 +2429,28 @@ class MainWindow(QMainWindow):
     def toggle_slot(self):
         self.toggle_shape("slot")
 
+    def toggle_polygon(self):
+        view = self.view
+        if view.drawing is not None and view.drawing_target == "polygon":
+            view.stop_drawing()
+        else:
+            if view.drawing is not None:
+                view.stop_drawing()
+            view.start_drawing("polygon")
+            self.statusBar().showMessage("Click the points. A click on the first point closes the polygon; a "
+                                         "double click or Enter leaves it open. Backspace removes the latest "
+                                         "point, Esc cancels, Shift gives straight edges.")
+        self.update_sheet_panel()
+        self.update_shape_panel()
+
     def update_shape_panel(self):
         mode = self.view.shape_mode
         self.rectangle_shape_button.setText("Cancel rectangle" if mode == "rectangle" else "Draw rectangle")
         self.circle_shape_button.setText("Cancel circle" if mode == "circle" else "Draw circle")
         self.hole_circle_shape_button.setText("Cancel hole circle" if mode == "hole circle" else "Draw hole circle")
         self.slot_shape_button.setText("Cancel slot" if mode == "slot" else "Draw slot")
+        polygon = self.view.drawing is not None and self.view.drawing_target == "polygon"
+        self.polygon_shape_button.setText("Cancel polygon" if polygon else "Draw polygon")
 
     def add_shape(self, program, angle=0.0):
         """A figure drawn in PlasmaNest, placed where it was drawn: turned about its anchor."""
@@ -2298,10 +2459,15 @@ class MainWindow(QMainWindow):
         placement = Placement(program, anchor[0] - moved[0], anchor[1] - moved[1], angle)
         part = self.add_part(placement)
         self.after_change([part])
+        shape = shape_of(program)
+        if isinstance(shape, Polygon):
+            self.statusBar().showMessage(f"{program.name} made. Change the points in the panel or drag them.",
+                                         10000)
+            return part
         self.statusBar().showMessage(f"{program.name} mm made. Type exact sizes in the panel if needed.",
                                      10000)
         # Ready for exact numbers: type the width, Tab, the height, Enter (or the diameter, Enter).
-        field = self.size_d if isinstance(shape_of(program), (Circle, HoleCircle)) else self.size_w
+        field = self.size_d if isinstance(shape, (Circle, HoleCircle)) else self.size_w
         field.setFocus()
         field.selectAll()
         return part
@@ -2310,7 +2476,10 @@ class MainWindow(QMainWindow):
         if self.view.shape_mode is not None:
             self.view.stop_shape()
         if self.view.drawing is not None:
+            was_sheet = self.view.drawing_target == "sheet"
             self.view.stop_drawing()
+            if not was_sheet:
+                self.view.start_drawing()
         else:
             self.view.start_drawing()
         self.update_sheet_panel()
@@ -2753,4 +2922,9 @@ def main(argv=None):
         window.open_project_path(projects[0])
     window.load_paths([p for p in paths if not p.lower().endswith(".pnest")])
     window.view.fit()
-    return app.exec_()
+    result = app.exec_()
+    # Tear the window down while QApplication still exists. Left to Python, the two go in any
+    # order, and the window going after the application crashes now and then on quitting.
+    window.updating_ui = True
+    sip.delete(window)
+    return result

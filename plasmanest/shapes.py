@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass, replace
 
 from .gcode import Program, format_number
+from .nest import Sheet, _segments_distance, _segments_touch
 
 MIN_SIZE = 1.0  # mm
 HEADER = re.compile(r";PlasmaNest rectangle ([0-9.]+) x ([0-9.]+) mm")
@@ -677,6 +678,266 @@ def slot_of(program):
         return None
 
 
+@dataclass(frozen=True)
+class Polygon:
+    """Points clicked out in PlasmaNest. Closed, it is cut like a rectangle: a part or a hole, with
+    the kerf offset and sharp corners. Open, it is cut as a line from one end to the other, with no
+    kerf offset as it has no inside, and a lead-in that carries on from the start end."""
+    points: tuple             # ((x, y), ...) in order, the last not repeating the first
+    closed: bool = True
+    inside: bool = False      # closed only: cut as a hole, kerf inwards, counter-clockwise
+    kerf: float = 0.0
+    material: int = None
+    leadin: float = 0.0
+    edge: int = 0             # closed: the lead-in's edge, from points[edge] to the next.
+                              # Open: the end to start from, 0 the first point and 1 the last.
+    at: float = 0.5           # closed only
+
+    # ---------------------------------------------------------------- geometry
+
+    def edges(self):
+        pts = self.points
+        count = len(pts) if self.closed else len(pts) - 1
+        return [(pts[i], pts[(i + 1) % len(pts)]) for i in range(count)]
+
+    @property
+    def counter_clockwise(self):
+        pts = self.points
+        return sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(pts, pts[1:] + pts[:1])) > 0
+
+    def outward_normal(self, index):
+        a, b = self.edges()[index]
+        length = math.hypot(b[0] - a[0], b[1] - a[1])
+        dx, dy = (b[0] - a[0]) / length, (b[1] - a[1]) / length
+        return (dy, -dx) if self.counter_clockwise else (-dy, dx)
+
+    def path_points(self):
+        """The corners of the torch path: the points moved out by half the kerf for a part, in for
+        a hole, one for each point, where the moved edges meet."""
+        if not self.closed or self.kerf == 0:
+            return list(self.points)
+        distance = (-1 if self.inside else 1) * self.kerf / 2
+        count = len(self.points)
+        lines = []
+        for i, (a, b) in enumerate(self.edges()):
+            n = self.outward_normal(i)
+            lines.append(((a[0] + n[0] * distance, a[1] + n[1] * distance), (b[0] - a[0], b[1] - a[1]), n))
+        result = []
+        for i in range(count):
+            (p, d, n), (q, e, _) = lines[i - 1], lines[i]
+            denominator = d[0] * e[1] - d[1] * e[0]
+            if abs(denominator) < 1e-12 * math.hypot(*d) * math.hypot(*e):  # straight on: no corner
+                point = self.points[i]
+                result.append((point[0] + n[0] * distance, point[1] + n[1] * distance))
+            else:
+                t = ((q[0] - p[0]) * e[1] - (q[1] - p[1]) * e[0]) / denominator
+                result.append((p[0] + t * d[0], p[1] + t * d[1]))
+        return result
+
+    def check(self):
+        n = format_number
+        if self.kerf < 0 or self.leadin < 0:
+            raise ValueError("Kerf and lead-in cannot be negative.")
+        pts = self.points
+        if len(pts) < (3 if self.closed else 2):
+            raise ValueError(f"A{' closed' if self.closed else 'n open'} polygon needs at least "
+                             f"{3 if self.closed else 2} points.")
+        for a, b in self.edges():
+            if math.hypot(b[0] - a[0], b[1] - a[1]) < MIN_SIZE:
+                raise ValueError(f"Two neighbouring points are less than {n(MIN_SIZE)} mm apart.")
+        if not self.closed:
+            if self.edge not in (0, 1):
+                raise ValueError("Invalid place for the lead-in.")
+            start, point = self.path()
+            # The lead-in carries on straight from the first piece, and must not cross the line.
+            line = self.cut_order()
+            if self.leadin > 0 and any(_segments_touch(start, point, a, b) for a, b in zip(line[1:], line[2:])):
+                raise ValueError(f"The lead-in {n(self.leadin)} mm crosses the line.")
+            return
+        try:
+            Sheet(pts)
+        except ValueError:
+            raise ValueError("The polygon's edges must not cross or fold back, and its points must not "
+                             "all lie on a straight line.")
+        if self.edge not in range(len(pts)) or not 0.0 <= self.at <= 1.0:
+            raise ValueError("Invalid place for the lead-in.")
+        path = self.path_points()
+        if self.kerf > 0:
+            too_tight = ValueError(f"The kerf {n(self.kerf)} mm does not fit the polygon's shape.")
+            path_edges = list(zip(path, path[1:] + path[:1]))
+            for (a, b), (c, d) in zip(self.edges(), path_edges):
+                if (b[0] - a[0]) * (d[0] - c[0]) + (b[1] - a[1]) * (d[1] - c[1]) <= 0:
+                    raise too_tight  # an edge swallowed by its neighbours
+            try:
+                Sheet(path)
+            except ValueError:
+                raise too_tight
+            for c, d in path_edges:
+                for a, b in self.edges():
+                    if _segments_distance(a, b, c, d) < self.kerf / 2 - 1e-6:
+                        raise too_tight
+        start, point = self.path()
+        if self.leadin > 0:
+            # The lead-in must start in the scrap and reach the cut start without crossing the path.
+            count = len(path)
+            skip = {self.edge}
+            if self.at == 0.0:
+                skip.add((self.edge - 1) % count)
+            if self.at == 1.0:
+                skip.add((self.edge + 1) % count)
+            others = [e for i, e in enumerate(zip(path, path[1:] + path[:1])) if i not in skip]
+            if (Sheet(path).contains_point(start) != self.inside
+                    or any(_segments_touch(start, point, a, b) for a, b in others)):
+                raise ValueError(f"The lead-in {n(self.leadin)} mm does not fit "
+                                 f"{'in the hole' if self.inside else 'there'}.")
+
+    def cut_order(self):
+        """An open polygon's points in the order they are cut."""
+        return list(self.points) if self.edge == 0 else list(reversed(self.points))
+
+    def path(self):
+        """(lead-in start, cut start). Open: the lead-in carries on straight back from the start end."""
+        if not self.closed:
+            line = self.cut_order()
+            point, after = line[0], line[1]
+            length = math.hypot(point[0] - after[0], point[1] - after[1])
+            ux, uy = (point[0] - after[0]) / length, (point[1] - after[1]) / length
+            return (point[0] + ux * self.leadin, point[1] + uy * self.leadin), point
+        path = self.path_points()
+        a, b = path[self.edge], path[(self.edge + 1) % len(path)]
+        point = (a[0] + (b[0] - a[0]) * self.at, a[1] + (b[1] - a[1]) * self.at)
+        normal = self.outward_normal(self.edge)
+        side = -1.0 if self.inside else 1.0  # the lead-in starts in the scrap
+        return (point[0] + side * normal[0] * self.leadin, point[1] + side * normal[1] * self.leadin), point
+
+    def corners(self, point):
+        """The corners from the cut start round to it again: clockwise for a part, counter-clockwise
+        for a hole."""
+        path = self.path_points()
+        count = len(path)
+        if self.counter_clockwise == self.inside:  # the points' own order
+            order = [path[(self.edge + k) % count] for k in range(1, count + 1)]
+        else:
+            order = [path[(self.edge - k) % count] for k in range(count)]
+        return order + [point]
+
+    # ------------------------------------------------------------------ G-code
+
+    def gcode(self):
+        self.check()
+        n = format_number
+        start, point = self.path()
+        settings = (f"{PARAMETERS} points={';'.join(f'{n(x)},{n(y)}' for x, y in self.points)} "
+                    f"closed={'yes' if self.closed else 'no'} side={'inside' if self.inside else 'outside'} "
+                    f"kerf={n(self.kerf)} material={'-' if self.material is None else self.material} "
+                    f"leadin={n(self.leadin)} edge={self.edge} at={n(self.at)}")
+        lines = [f";PlasmaNest polygon {len(self.points)} points {'closed' if self.closed else 'open'}", settings,
+                 "G21 G40 G90"]
+        if self.material is not None:
+            lines += [f"M190 P{self.material}", "M66 P3 L3 Q1"]
+        lines += ["F#<_hal[plasmac.cut-feed-rate]>", f"G0 X{n(start[0])} Y{n(start[1])}", "M3 $0 S1"]
+        if self.leadin > 0:
+            lines.append(f"G1 X{n(point[0])} Y{n(point[1])}")
+        moves = self.corners(point) if self.closed else self.cut_order()[1:]
+        last = point
+        for x, y in moves:
+            if abs(x - last[0]) > 1e-9 or abs(y - last[1]) > 1e-9:  # a cut start on a corner
+                lines.append(f"G1 X{n(x)} Y{n(y)}")
+            last = (x, y)
+        lines += ["M5 $0", "M2", ""]
+        return "\n".join(lines)
+
+    @property
+    def name(self):
+        kind = ("Polygon hole" if self.inside else "Polygon") if self.closed else "Polyline"
+        return f"{kind}, {len(self.points)} points"
+
+    def program(self):
+        return Program(self.name, self.gcode())
+
+    # ------------------------------------------------- shared with the other shapes
+
+    @property
+    def anchor(self):
+        return self.points[0]
+
+    def nearest(self, point):
+        """((edge, fraction), distance in mm) on the drawn outline nearest a point. Open: the
+        nearer end, ((0 or 1, 0.0), distance), as a line can only be cut from one of its ends."""
+        if not self.closed:
+            ends = [math.hypot(point[0] - p[0], point[1] - p[1]) for p in (self.points[0], self.points[-1])]
+            end = 0 if ends[0] <= ends[1] else 1
+            return (end, 0.0), ends[end]
+        best = None
+        for index, (a, b) in enumerate(self.edges()):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            t = max(0.0, min(1.0, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / (dx * dx + dy * dy)))
+            distance = math.hypot(point[0] - a[0] - t * dx, point[1] - a[1] - t * dy)
+            if best is None or distance < best[1]:
+                best = ((index, round(t, 4)), distance)
+        return best
+
+    def with_leadin_at(self, position):
+        if not self.closed:
+            return replace(self, edge=position[0])
+        return replace(self, edge=position[0], at=position[1])
+
+    def leadin_segments(self):
+        return [self.path()]
+
+    def describe_leadin(self, position):
+        if not self.closed:
+            return "from the first point" if position[0] == 0 else "from the last point"
+        return f"edge {position[0] + 1}"
+
+    def grip(self, point, reach):
+        """A point: dragging it moves that point."""
+        xs, ys = [p[0] for p in self.points], [p[1] for p in self.points]
+        if max(max(xs) - min(xs), max(ys) - min(ys)) < 4 * reach:
+            return None
+        best = None
+        for index, (x, y) in enumerate(self.points):
+            distance = math.hypot(point[0] - x, point[1] - y)
+            if distance <= reach and (best is None or distance < best[1]):
+                best = (index, distance)
+        return (("point", best[0]), None) if best is not None else None
+
+    def resized(self, handle, point):
+        points = list(self.points)
+        points[handle[1]] = (float(round(point[0])), float(round(point[1])))
+        return replace(self, points=tuple(points))
+
+    def size_text(self):
+        return f"{len(self.points)} points"
+
+    def with_point(self, index, point):
+        points = list(self.points)
+        points[index] = (float(point[0]), float(point[1]))
+        return replace(self, points=tuple(points))
+
+
+POLYGON_HEADER = re.compile(r";PlasmaNest polygon ([0-9]+) points (closed|open)")
+
+
+def polygon_of(program):
+    """The Polygon a program was made from, or None for any other figure."""
+    lines = program.text.lstrip().split("\n")
+    if len(lines) < 2 or not POLYGON_HEADER.match(lines[0]) or not lines[1].startswith(PARAMETERS):
+        return None
+    try:
+        values = dict(word.split("=", 1) for word in lines[1][len(PARAMETERS):].split())
+        points = tuple(tuple(float(v) for v in pair.split(",")) for pair in values["points"].split(";"))
+        if any(len(point) != 2 for point in points):
+            return None
+        polygon = Polygon(points, closed=values["closed"] == "yes", inside=values["side"] == "inside",
+                          kerf=float(values["kerf"]),
+                          material=None if values["material"] == "-" else int(values["material"]),
+                          leadin=float(values["leadin"]), edge=int(values["edge"]), at=float(values["at"]))
+        return polygon if polygon.gcode() == program.text else None
+    except (KeyError, ValueError):
+        return None
+
+
 CIRCLE_HEADER = re.compile(r";PlasmaNest circle ([0-9.]+) mm")
 
 
@@ -697,8 +958,9 @@ def circle_of(program):
 
 
 def shape_of(program):
-    """The Rectangle, Circle, HoleCircle or Slot a program was made from, or None for loaded G-code."""
-    return rectangle_of(program) or circle_of(program) or hole_circle_of(program) or slot_of(program)
+    """The figure drawn in PlasmaNest that a program was made from, or None for loaded G-code."""
+    return (rectangle_of(program) or circle_of(program) or hole_circle_of(program) or slot_of(program)
+            or polygon_of(program))
 
 
 def rectangle_program(x0, y0, x1, y1, **settings):

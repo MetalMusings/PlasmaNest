@@ -77,6 +77,9 @@ def window(app):
     yield win
     win.saved_state = win.undo_stack[win.undo_index]
     win.close()
+    from PyQt5 import sip
+    win.updating_ui = True
+    sip.delete(win)  # now, not when the garbage collector gets to it in a later test
 
 
 def test_not_embedded_writes_nothing(window, tmp_path, monkeypatch):
