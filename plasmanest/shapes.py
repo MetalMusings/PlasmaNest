@@ -15,6 +15,13 @@ MIN_SIZE = 1.0  # mm
 HEADER = re.compile(r";PlasmaNest rektangel ([0-9.]+) x ([0-9.]+) mm")
 PARAMETERS = ";PlasmaNest-parametrar:"
 
+# Small holes, the user's choice 2026-11-04: holes under this drawn diameter are cut at reduced
+# speed, start with a half circle from the centre and end with a half circle into the scrap,
+# at most OVERCUT mm along it.
+SMALL_HOLE = 30.0  # mm, drawn diameter
+SMALL_HOLE_SPEED = 60  # percent of the material's cut feed rate
+OVERCUT = 2.0  # mm along the lead-out arc
+
 # Edges of the drawn rectangle, each with its start, end and outward normal, in clockwise order.
 # A lead-in position is (edge, fraction along it from its start).
 EDGE_NAMES = ("vänster", "övre", "höger", "nedre")
@@ -163,6 +170,11 @@ class Circle:
     def path_radius(self):
         return self.diameter / 2 + self.offset
 
+    @property
+    def small_hole(self):
+        """A hole cut slowly with half-circle lead-in and lead-out. The lead-in field is not used."""
+        return self.inside and self.diameter < SMALL_HOLE
+
     def check(self):
         n = format_number
         if self.diameter < MIN_SIZE:
@@ -172,15 +184,19 @@ class Circle:
         if self.inside:
             if self.diameter <= self.kerf:
                 raise ValueError(f"Hålet är för litet för skärspalten {n(self.kerf)} mm.")
-            if self.leadin > self.path_radius:
+            if self.leadin > self.path_radius and not self.small_hole:
                 raise ValueError(f"Inledningen {n(self.leadin)} mm får inte plats i hålet.")
 
     def path(self):
-        """(lead-in start, cut start). The cut is one full circle from the cut start."""
+        """(lead-in start, cut start). The cut is one full circle from the cut start.
+
+        A small hole's lead-in starts in the centre."""
         a = math.radians(self.angle)
         ux, uy = math.cos(a), math.sin(a)
         r = self.path_radius
         point = (self.cx + r * ux, self.cy + r * uy)
+        if self.small_hole:
+            return (self.cx, self.cy), point
         side = -1.0 if self.inside else 1.0  # the lead-in starts in the scrap
         return (point[0] + side * ux * self.leadin, point[1] + side * uy * self.leadin), point
 
@@ -196,13 +212,36 @@ class Circle:
         if self.material is not None:
             lines += [f"M190 P{self.material}", "M66 P3 L3 Q1"]
         lines += ["F#<_hal[plasmac.cut-feed-rate]>", f"G0 X{n(start[0])} Y{n(start[1])}", "M3 $0 S1"]
-        if self.leadin > 0:
-            lines.append(f"G1 X{n(point[0])} Y{n(point[1])}")
-        # Parts clockwise, holes counter-clockwise, as plasma contours are cut.
-        lines.append(f"{'G3' if self.inside else 'G2'} X{n(point[0])} Y{n(point[1])} "
-                     f"I{n(self.cx - point[0])} J{n(self.cy - point[1])}")
-        lines += ["M5 $0", "M2", ""]
+        if self.small_hole:
+            lines += self.small_hole_cut(point)
+        else:
+            if self.leadin > 0:
+                lines.append(f"G1 X{n(point[0])} Y{n(point[1])}")
+            # Parts clockwise, holes counter-clockwise, as plasma contours are cut.
+            lines.append(f"{'G3' if self.inside else 'G2'} X{n(point[0])} Y{n(point[1])} "
+                         f"I{n(self.cx - point[0])} J{n(self.cy - point[1])}")
+            lines.append("M5 $0")
+        lines += ["M2", ""]
         return "\n".join(lines)
+
+    def small_hole_cut(self, point):
+        """After M3, from the centre: half a circle out to the edge, the hole, and half a circle back in,
+        stopped after OVERCUT mm, all counter-clockwise and at reduced speed. The lead-in and
+        lead-out lie on one circle, of half the hole's radius, that touches the hole at point."""
+        n = format_number
+        a = math.radians(self.angle)
+        small = self.path_radius / 2
+        centre = (self.cx + small * math.cos(a), self.cy + small * math.sin(a))
+        turn = min(math.pi, OVERCUT / small)
+        end = (centre[0] + small * math.cos(a + turn), centre[1] + small * math.sin(a + turn))
+        # The filter's own hole sensing, switched on by an earlier part, would add a torch-off
+        # overburn after the hole and move the start of the lead-out.
+        return ["#<holes>=0 (PlasmaNest cuts this hole itself)",
+                f"M67 E3 Q{SMALL_HOLE_SPEED} (small hole, {SMALL_HOLE_SPEED} percent speed)",
+                f"G3 X{n(point[0])} Y{n(point[1])} I{n(centre[0] - self.cx)} J{n(centre[1] - self.cy)}",
+                f"G3 X{n(point[0])} Y{n(point[1])} I{n(self.cx - point[0])} J{n(self.cy - point[1])}",
+                f"G3 X{n(end[0])} Y{n(end[1])} I{n(centre[0] - point[0])} J{n(centre[1] - point[1])}",
+                "M5 $0", "M68 E3 Q0 (full speed)"]
 
     @property
     def name(self):

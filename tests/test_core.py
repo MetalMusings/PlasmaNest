@@ -519,18 +519,48 @@ def test_circle_part_is_cut_clockwise_outside_the_kerf_with_leadin_from_outside(
 
 def test_circle_hole_is_cut_counter_clockwise_inside_the_kerf_with_leadin_from_inside():
     from plasmanest.shapes import Circle, shape_of
-    c = Circle(0, 0, 20, inside=True, kerf=1.6, leadin=5, angle=90)
+    c = Circle(0, 0, 40, inside=True, kerf=1.6, leadin=5, angle=90)
     program = c.program()
-    assert shape_of(program) == c and program.name == "Hål Ø20"
-    assert "G3 X0 Y9.2 I0 J-9.2" in program.text
+    assert shape_of(program) == c and program.name == "Hål Ø40"
+    assert "G3 X0 Y19.2 I0 J-19.2" in program.text and "M67" not in program.text
     cut, = [p for p in program.paths if p.kind == "cut"]
-    assert cut.points[0] == pytest.approx((0, 4.2))
+    assert cut.points[0] == pytest.approx((0, 14.2))
+
+
+def test_small_hole_is_cut_slowly_with_half_circle_leads_from_the_centre():
+    from plasmanest.shapes import Circle, shape_of
+    c = Circle(10, 20, 20, inside=True, kerf=1.6, leadin=5, angle=90)  # the lead-in field is not used
+    program = c.program()
+    assert shape_of(program) == c
+    lines = program.text.split("\n")
+    start = lines.index("M3 $0 S1")
+    assert lines[start - 1] == "G0 X10 Y20"
+    # the filter's hole sensing would add its own overburn
+    assert lines[start + 1].startswith("#<holes>=0")
+    assert lines[start + 2].startswith("M67 E3 Q60")
+    # half a circle of radius 4.6 out to the edge, tangent to the hole, then the whole hole
+    assert lines[start + 3] == "G3 X10 Y29.2 I0 J4.6"
+    assert lines[start + 4] == "G3 X10 Y29.2 I0 J-9.2"
+    # back in along the same small circle, 2 mm along the arc
+    assert lines[start + 5].startswith("G3 ") and lines[start + 5].endswith("I0 J-4.6")
+    assert lines[start + 6:start + 8] == ["M5 $0", "M68 E3 Q0 (full speed)"]
+    cut, = [p for p in program.paths if p.kind == "cut"]
+    end = cut.points[-1]
+    assert math.hypot(end[0] - 10, end[1] - 24.6) == pytest.approx(4.6, abs=1e-6)
+    assert math.atan2(end[1] - 24.6, end[0] - 10) - math.pi / 2 == pytest.approx(2 / 4.6, abs=1e-6)
+    assert max(math.hypot(x - 10, y - 20) for x, y in cut.points) == pytest.approx(9.2, abs=1e-6)
+    # a tiny hole ends with the whole half circle, back in the centre
+    tiny = Circle(0, 0, 3, inside=True, kerf=1.6).program()
+    assert "G3 X0 Y0 I0.35 J0" in tiny.text
+    # from 30 mm, and parts of any size, as before
+    assert "M67" not in Circle(0, 0, 30, inside=True, kerf=1.6).gcode()
+    assert "M67" not in Circle(0, 0, 10, kerf=1.6).gcode()
 
 
 def test_impossible_circles_are_refused():
     from plasmanest.shapes import Circle
     with pytest.raises(ValueError, match="får inte plats"):
-        Circle(0, 0, 20, inside=True, kerf=1.6, leadin=10).gcode()
+        Circle(0, 0, 40, inside=True, kerf=1.6, leadin=20).gcode()
     with pytest.raises(ValueError, match="för litet"):
         Circle(0, 0, 1.5, inside=True, kerf=1.6).gcode()
     with pytest.raises(ValueError):

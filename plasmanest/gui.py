@@ -17,11 +17,11 @@ from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox
                              QTableWidgetItem, QToolTip, QVBoxLayout, QWidget)
 
 from . import live, machine
-from .gcode import GCodeError, Program, load_program
+from .gcode import GCodeError, Program, format_number, load_program
 from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
 from .materials import available_materials
 from .theme import qtplasmac_colors, stylesheet
-from .shapes import Circle, Rectangle, shape_of
+from .shapes import OVERCUT, SMALL_HOLE, SMALL_HOLE_SPEED, Circle, Rectangle, shape_of
 
 APP_NAME = "PlasmaNest"
 PART_GAP = 10.0        # mm between figures placed automatically
@@ -1545,6 +1545,12 @@ class MainWindow(QMainWindow):
         self.rect_material.setCurrentIndex(index)
         self.rect_side.setCurrentIndex(1 if shape.inside else 0)
         self.rect_kerf.setEnabled(shape.material is None or self.material_kerf(shape.material) is None)
+        small_hole = isinstance(shape, Circle) and shape.small_hole
+        self.rect_leadin.setEnabled(not small_hole)
+        self.rect_leadin.setToolTip(
+            f"Hål under {format_number(SMALL_HOLE)} mm börjar i centrum med en halvcirkel, skärs med "
+            f"{SMALL_HOLE_SPEED} % hastighet och slutar med en halvcirkel, högst {format_number(OVERCUT)} mm."
+            if small_hole else "")
 
     def material_kerf(self, number):
         for material in self.materials:

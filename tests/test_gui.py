@@ -1141,3 +1141,12 @@ def test_apply_theme_colours_the_view(app):
         app.setStyleSheet("")
         for name, value in saved.items():
             setattr(gui, name, value)
+
+
+def test_leadin_field_is_disabled_for_small_holes(window):
+    from plasmanest.shapes import Circle
+    window.add_shape(Circle(200, 200, 20, inside=True, kerf=1.2).program())
+    assert window.rect_box.isVisible() and not window.rect_leadin.isEnabled()
+    assert "centrum" in window.rect_leadin.toolTip()
+    window.add_shape(Circle(400, 200, 30, inside=True, kerf=1.2).program())
+    assert window.rect_leadin.isEnabled() and window.rect_leadin.toolTip() == ""
