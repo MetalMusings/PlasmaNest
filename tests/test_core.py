@@ -718,3 +718,18 @@ def test_impossible_polygons_are_refused():
             (dict(points=((0, 0), (100, 0), (100, 3), (0, 3)), inside=True, kerf=4), "kerf 4 mm does not fit")):
         with pytest.raises(ValueError, match=message):
             Polygon(**settings).gcode()
+
+
+def test_work_area_from_the_expanded_ini_file(tmp_path):
+    from plasmanest.materials import work_area
+    ini = tmp_path / "machine.ini.expanded"
+    ini.write_text("# QtPlasmaC's first line has no section\n[TRAJ]\nLINEAR_UNITS = mm\n"
+                   "[AXIS_X]\nMIN_LIMIT = -0.001\nMAX_LIMIT = 1200.001  # comment\n"
+                   "[JOINT_0]\nMIN_LIMIT = -50\nMAX_LIMIT = 5000\n"
+                   "[AXIS_Y]\nMIN_LIMIT = 0\nMAX_LIMIT = 2190\n", encoding="utf-8")
+    assert work_area(str(ini)) == (1200.0, 2190.0)
+    ini.write_text(ini.read_text().replace("LINEAR_UNITS = mm", "LINEAR_UNITS = inch"), encoding="utf-8")
+    assert work_area(str(ini)) == (round(1200.002 * 25.4, 1), round(2190 * 25.4, 1))
+    ini.write_text("[EMC]\nMACHINE = x\n#INCLUDE limits.inc\n", encoding="utf-8")  # not expanded
+    assert work_area(str(ini)) is None
+    assert work_area(str(tmp_path / "missing.ini")) is None

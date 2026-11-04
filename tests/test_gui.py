@@ -1548,3 +1548,27 @@ def test_place_lead_in_chooses_which_end_an_open_polygon_starts_from(window):
     window.poly_closed.setChecked(True)  # closed, the lead-in starts afresh on the first edge
     closed = shape_of(window.parts[0].placement.program)
     assert closed.closed and (closed.edge, closed.at) == (0, 0.5)
+
+
+def test_a_new_sheet_is_as_large_as_the_machines_work_area(app, tmp_path, monkeypatch):
+    from plasmanest import materials
+    ini = tmp_path / "machine.ini.expanded"
+    ini.write_text("[AXIS_X]\nMIN_LIMIT = 0\nMAX_LIMIT = 693\n[AXIS_Y]\nMIN_LIMIT = 0\nMAX_LIMIT = 2190\n",
+                   encoding="utf-8")
+    monkeypatch.setattr(materials, "find_ini", lambda: str(ini))
+    win = MainWindow()
+    try:
+        assert (win.sheet.width, win.sheet.height, win.sheet.bounds[:2]) == (693, 2190, (0, 0))
+        assert (win.sheet_width.value(), win.sheet_height.value()) == (693, 2190)
+    finally:
+        win.saved_state = win.undo_stack[win.undo_index]
+        win.close()
+        sip.delete(win)
+    monkeypatch.setattr(materials, "find_ini", lambda: None)
+    win = MainWindow()
+    try:
+        assert (win.sheet.width, win.sheet.height) == (3000, 1500)  # without LinuxCNC
+    finally:
+        win.saved_state = win.undo_stack[win.undo_index]
+        win.close()
+        sip.delete(win)

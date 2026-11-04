@@ -32,7 +32,7 @@ The files in `samples/` are good for trying it out.
 | What | How |
 |---|---|
 | Load G-code | **Load…** or Ctrl+L. The figure is put in a free place on the sheet. |
-| Rectangular sheet | Width and height in the panel. The sheet's lower left corner is G-code X0 Y0. |
+| Rectangular sheet | Width and height in the panel. The sheet's lower left corner is G-code X0 Y0. At start the sheet is as large as QtPlasmaC's work area, the X and Y travel in its INI file; without LinuxCNC it is 3000 × 1500 mm. |
 | Draw the sheet | **Draw**, and click the corners with the mouse. Finish with a double click, Enter or a click on the first corner. Backspace removes the latest corner, Esc cancels and Shift gives straight edges. The corners land on whole millimetres. |
 | Type the sheet's corners | **Corners…** shows the corners in a table, where you can change, add and remove them. Use it for exact sizes. |
 | Sheet from the machine | Jog to the corners of the sheet and press the **save point** user button in QtPlasmaC at each one. Open **From the machine…** in PlasmaNest, where the points appear one by one in a table and a drawing. The drawing shows the edges, the latest point and the sheet after the margin. Choose a safety margin and press **Use as sheet**. See below for how to add the button. |

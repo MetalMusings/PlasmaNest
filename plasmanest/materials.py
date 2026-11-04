@@ -1,4 +1,5 @@
-"""QtPlasmaC's material file: numbers, names and kerf widths. Read only, no Qt."""
+"""QtPlasmaC's material file: numbers, names and kerf widths, and the machine's work area from
+its INI file. Read only, no Qt."""
 
 import os
 import re
@@ -12,17 +13,42 @@ class Material:
     kerf: float  # mm
 
 
-def machine_name(ini_path):
-    """MACHINE under [EMC]. A plain reader: LinuxCNC INI files need not suit configparser."""
-    section = None
+def ini_value(ini_path, section, key):
+    """The first value of a key in a section. A plain reader: LinuxCNC INI files need not suit
+    configparser. QtPlasmaC is given the expanded file, with #INCLUDE already filled in."""
+    current = None
     with open(ini_path, encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
             if line.startswith("["):
-                section = line.strip("[] ").upper()
-            elif section == "EMC" and "=" in line and line.split("=", 1)[0].strip().upper() == "MACHINE":
+                current = line.strip("[] ").upper()
+            elif current == section and "=" in line and line.split("=", 1)[0].strip().upper() == key:
                 return line.split("=", 1)[1].split("#")[0].strip()
     return None
+
+
+def machine_name(ini_path):
+    """MACHINE under [EMC]."""
+    return ini_value(ini_path, "EMC", "MACHINE")
+
+
+def work_area(ini_path):
+    """(width, height) in mm that X and Y can travel, from [AXIS_X] and [AXIS_Y], or None."""
+    try:
+        size = [float(ini_value(ini_path, axis, "MAX_LIMIT")) - float(ini_value(ini_path, axis, "MIN_LIMIT"))
+                for axis in ("AXIS_X", "AXIS_Y")]
+        units = (ini_value(ini_path, "TRAJ", "LINEAR_UNITS") or "mm").lower()
+    except (OSError, TypeError, ValueError):
+        return None
+    scale = 25.4 if units in ("inch", "in", "imperial") else 1.0
+    width, height = (round(value * scale, 1) for value in size)
+    return (width, height) if width > 0 and height > 0 else None
+
+
+def machine_work_area():
+    """The running LinuxCNC's work area, or None when there is none."""
+    ini = find_ini()
+    return work_area(ini) if ini else None
 
 
 def find_ini():

@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox
 from . import live, machine
 from .gcode import GCodeError, Program, format_number, load_program
 from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
-from .materials import available_materials
+from .materials import available_materials, machine_work_area
 from .theme import qtplasmac_colors, stylesheet
 from .shapes import (OVERCUT, SMALL_HOLE, SMALL_HOLE_SPEED, Circle, HoleCircle, Polygon, Rectangle, Slot,
                      shape_of)
@@ -36,6 +36,7 @@ NUDGE_STEP_LARGE = 10.0
 HANDLE_DISTANCE = 42   # pixels from the figure to the rotation handle
 ROTATE_SNAP = 15.0     # degrees with Ctrl held
 ROTATE_MIN_RADIUS = 15 # pixels from the pivot; closer than this the angle is too jumpy
+DEFAULT_SHEET = (3000.0, 1500.0)  # mm, without LinuxCNC to give the work area
 RESIZE_REACH = 6  # pixels from a drawn figure's outline where dragging resizes it
 
 # QtPlasmaC (2.9) keeps the shapes accepted in CONVERSATIONAL here; SEND loads this file.
@@ -1433,7 +1434,8 @@ class MainWindow(QMainWindow):
 
         self.scene_ = QGraphicsScene(self)
         self.scene_.setSceneRect(-100000, -100000, 200000, 200000)
-        self.sheet_item = SheetItem(Sheet.rectangle(3000.0, 1500.0))
+        # A new sheet is as large as QtPlasmaC's work area, or 3000 x 1500 mm without LinuxCNC.
+        self.sheet_item = SheetItem(Sheet.rectangle(*(machine_work_area() or DEFAULT_SHEET)))
         self.scene_.addItem(self.sheet_item)
         self.scene_.addItem(OriginItem())
         self.travel = QGraphicsPathItem()
