@@ -170,7 +170,11 @@ def test_plasmanest_fills_the_whole_tab(app):
     assert wait_for(lambda: tab.container is not None)
     QApplication.processEvents()
     assert tab.container.isVisible()
-    assert tab.container.geometry() == tab.rect()
+    # The whole tab, less what QtPlasmaC's style sheet lets the pages overhang the pane.
+    m = plasmanest_tab.PANE_OVERHANG
+    inside = tab.rect().adjusted(m, m, -m, -m)
+    assert tab.container.mapTo(tab, tab.container.rect().topLeft()) == inside.topLeft()
+    assert tab.container.size() == inside.size()
     tab.stop()
     assert not tab.message_page.isHidden()
     tab.close()

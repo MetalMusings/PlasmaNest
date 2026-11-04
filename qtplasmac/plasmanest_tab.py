@@ -27,6 +27,7 @@ from plasmanest import live  # noqa: E402 - no Qt, safe to import into QtPlasmaC
 COMMAND = [sys.executable, os.path.join(ROOT, "plasmanest.py"), "--embed"]
 START_TIMEOUT_MS = 15000
 WATCH_MS = 1000
+PANE_OVERHANG = 2  # px, from QtPlasmaC's qtplasmac.style
 
 
 LOG_FILE = os.path.join(os.path.expanduser("~"), ".plasmanest", "qtplasmac-tab.log")
@@ -69,8 +70,16 @@ class PlasmaNestTab(QWidget):
         self.container = None
         self.notifier = None
         self.buffer = b""
+        # QtPlasmaC's style sheet puts the tab pages 2 px outside the pane on every side
+        # (QTabWidget::pane { top:-2px; ... }). Qt's own widgets are clipped there, but the embedded
+        # X window is drawn on top and covered the top line of the tab buttons, so keep it inside.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(PANE_OVERHANG, PANE_OVERHANG, PANE_OVERHANG, PANE_OVERHANG)
+        outer.setSpacing(0)
+        stack = QWidget()
+        outer.addWidget(stack)
         # Two pages: a message while starting or after a failure, and PlasmaNest filling the tab.
-        self.pages = QStackedLayout(self)
+        self.pages = QStackedLayout(stack)
         self.message_page = QWidget()
         message_layout = QVBoxLayout(self.message_page)
         self.message = QLabel()
