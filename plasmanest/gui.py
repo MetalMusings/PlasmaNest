@@ -1656,6 +1656,11 @@ class MainWindow(QMainWindow):
         self.autoload.toggled.connect(lambda checked: self.write_live_export())
         self.autoload.hide()
         layout.addWidget(self.autoload)
+        self.allow_overlaps = QCheckBox("Allow overlapping figures")
+        self.allow_overlaps.setToolTip("Overlapping figures are still shown in the warning colour, but they no "
+                                       "longer stop the nest going to MAIN or ask before an export.")
+        self.allow_overlaps.toggled.connect(self.allow_overlaps_toggled)
+        layout.addWidget(self.allow_overlaps)
 
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
@@ -2151,7 +2156,8 @@ class MainWindow(QMainWindow):
         if outside:
             messages.append(f"<b style='color:{COLOR_OUTSIDE.name()}'>{outside} outside the sheet</b>")
         if overlapping:
-            messages.append(f"<b style='color:{COLOR_OVERLAP.name()}'>{len(overlapping)} overlapping</b>")
+            allowed = " (allowed)" if self.allow_overlaps.isChecked() else ""
+            messages.append(f"<b style='color:{COLOR_OVERLAP.name()}'>{len(overlapping)} overlapping{allowed}</b>")
         self.status_label.setText(" · ".join(messages))
 
     def update_travel(self):
@@ -2516,7 +2522,22 @@ class MainWindow(QMainWindow):
     def current_state(self):
         return (self.sheet,
                 tuple((p.placement.program, round(p.placement.x, 6), round(p.placement.y, 6),
-                       round(p.placement.angle, 6), p.placement.cut) for p in self.parts))
+                       round(p.placement.angle, 6), p.placement.cut) for p in self.parts),
+                self.allow_overlaps.isChecked())
+
+    def allow_overlaps_toggled(self, checked):
+        if self.updating_ui:
+            return
+        self.refresh()
+        self.commit()
+
+    def set_allow_overlaps(self, allow):
+        updating = self.updating_ui
+        self.updating_ui = True
+        try:
+            self.allow_overlaps.setChecked(allow)
+        finally:
+            self.updating_ui = updating
 
     def commit(self):
         """Record an undo step if anything changed since the last one."""
@@ -2529,7 +2550,8 @@ class MainWindow(QMainWindow):
         self.update_title()
 
     def restore(self, state):
-        sheet, figures = state
+        sheet, figures, allow_overlaps = state
+        self.set_allow_overlaps(allow_overlaps)
         self.view.stop_drawing()
         self.sheet_item.set_sheet(sheet)
         self.update_sheet_panel()
@@ -2579,7 +2601,7 @@ class MainWindow(QMainWindow):
         problems = []
         if self.outside_count:
             problems.append(f"{plural(self.outside_count, 'figure')} outside the sheet.")
-        if self.overlap_count:
+        if self.overlap_count and not self.allow_overlaps.isChecked():
             problems.append(f"{plural(self.overlap_count, 'figure')} overlapping each other.")
         warning = material_warning([p.placement for p in self.cut_parts()])
         if warning:
@@ -2622,6 +2644,7 @@ class MainWindow(QMainWindow):
             return
         for part in list(self.parts):
             self.remove_part(part)
+        self.set_allow_overlaps(False)
         self.project_path = None
         self.rebuild_list()
         self.selection_changed()
@@ -2637,7 +2660,7 @@ class MainWindow(QMainWindow):
 
     def open_project_path(self, path):
         try:
-            sheet, placements = load_project(path)
+            sheet, placements, options = load_project(path, with_options=True)
         except (OSError, ValueError, KeyError, IndexError, TypeError, GCodeError) as error:
             QMessageBox.critical(self, "Cannot open the project", str(error))
             return
@@ -2646,6 +2669,7 @@ class MainWindow(QMainWindow):
             self.remove_part(part)
         self.sheet_item.set_sheet(sheet)
         self.update_sheet_panel()
+        self.set_allow_overlaps(options["allow_overlaps"])
         for placement in placements:
             self.add_part(placement)
         self.project_path = path
@@ -2671,7 +2695,7 @@ class MainWindow(QMainWindow):
 
     def write_project(self, path):
         try:
-            save_project(path, self.sheet, [p.placement for p in self.parts])
+            save_project(path, self.sheet, [p.placement for p in self.parts], self.allow_overlaps.isChecked())
         except OSError as error:
             QMessageBox.critical(self, "Cannot save", str(error))
             return False
@@ -2692,7 +2716,7 @@ class MainWindow(QMainWindow):
         problems = []
         if self.outside_count:
             problems.append(f"{plural(self.outside_count, 'figure')} outside the sheet.")
-        if self.overlap_count:
+        if self.overlap_count and not self.allow_overlaps.isChecked():
             problems.append(f"{plural(self.overlap_count, 'figure')} overlapping each other.")
         warning = material_warning(placements)
         if warning:
@@ -2782,7 +2806,7 @@ def autosave(window, path=AUTOSAVE_FILE):
         return None
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        save_project(path, window.sheet, [p.placement for p in window.parts])
+        save_project(path, window.sheet, [p.placement for p in window.parts], window.allow_overlaps.isChecked())
     except OSError:
         return None
     return path

@@ -53,7 +53,9 @@ The files in `samples/` are good for trying it out.
 | Undo | Ctrl+Z. Redo with Ctrl+Y (Linux: Ctrl+Shift+Z). |
 | View | The mouse wheel zooms, the middle button or a right drag on empty space pans, F fits to the window. |
 
-Figures outside the sheet turn **red** and overlapping figures turn **orange**. A figure inside a
+Figures outside the sheet turn **red** and overlapping figures turn **orange**. Overlaps stop the
+nest going to MAIN and are asked about before an export, unless **Allow overlapping figures** is
+checked: then they stay orange but go through. The check box is saved with the project. A figure inside a
 hole in another does not count as overlapping, nor do holes drawn in PlasmaNest (holes and hole
 circles and slots) that lie wholly in another figure's material. The check uses the programmed path, so the kerf is
 not included: leave enough distance yourself.

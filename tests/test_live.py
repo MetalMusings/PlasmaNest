@@ -154,6 +154,39 @@ def test_only_figures_checked_in_the_list_go_to_qtplasmac(window, tmp_path):
     assert "Exported 2 figures" in window.statusBar().currentMessage()
 
 
+def test_overlaps_can_be_allowed_to_go_to_qtplasmac(window, tmp_path, monkeypatch):
+    from plasmanest import gui
+    d = str(tmp_path)
+    window.enable_live_export(d)
+    window.load_paths([FLANS, FLANS])
+    first, second = window.parts
+    second.set_center(first.placement.x, first.placement.y)
+    window.refresh()
+    window.commit()
+    assert "overlapping" in live.read(d)["problems"][0]
+    assert not window.allow_overlaps.isChecked()  # forbidden unless chosen
+    window.allow_overlaps.setChecked(True)
+    assert live.read(d)["problems"] == [] and live.read(d)["parts"] == 2
+    assert first.state == second.state == "overlap"  # still shown in the warning colour
+    assert "2 overlapping (allowed)" in window.status_label.text()
+    # No question before an export either.
+    asked = []
+    monkeypatch.setattr(gui.QMessageBox, "warning", lambda *args: asked.append(args) or gui.QMessageBox.No)
+    monkeypatch.setattr(gui.QFileDialog, "getSaveFileName", lambda *args: (str(tmp_path / "out.ngc"), ""))
+    window.export()
+    assert asked == [] and (tmp_path / "out.ngc").exists()
+    # Undo takes the check box back, and saving keeps it.
+    window.undo()
+    assert not window.allow_overlaps.isChecked() and live.read(d)["problems"]
+    window.redo()
+    assert window.allow_overlaps.isChecked()
+    window.write_project(str(tmp_path / "nest.pnest"))
+    window.new_project()
+    assert not window.allow_overlaps.isChecked()
+    window.open_project_path(str(tmp_path / "nest.pnest"))
+    assert window.allow_overlaps.isChecked() and window.overlap_count == 2 and not window.is_dirty()
+
+
 def test_a_figure_left_out_stays_left_out_when_remade(window):
     from PyQt5.QtCore import Qt
     from plasmanest.shapes import Circle, shape_of

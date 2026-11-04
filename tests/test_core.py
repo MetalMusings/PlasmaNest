@@ -401,6 +401,18 @@ def test_project_keeps_which_figures_are_cut(tmp_path):
     assert [p.cut for p in load_project(str(path))[1]] == [True, True]
 
 
+def test_project_keeps_whether_overlaps_are_allowed(tmp_path):
+    placements = [Placement(Program("a.ngc", SQUARE), 300, 150, 12)]
+    path = tmp_path / "x.pnest"
+    save_project(str(path), Sheet(OFFCUT), placements, allow_overlaps=True)
+    assert load_project(str(path), with_options=True)[2] == {"allow_overlaps": True}
+    assert len(load_project(str(path))) == 2
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["allow_overlaps"]  # saved before it could be chosen
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert load_project(str(path), with_options=True)[2] == {"allow_overlaps": False}
+
+
 def test_version_1_project_opens_as_a_rectangle(tmp_path):
     path = tmp_path / "old.pnest"
     path.write_text(json.dumps({

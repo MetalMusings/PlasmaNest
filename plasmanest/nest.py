@@ -311,7 +311,7 @@ def material_warning(placements):
     return None
 
 
-def save_project(path, sheet, placements):
+def save_project(path, sheet, placements, allow_overlaps=False):
     """Save the sheet, the placements and the G-code itself, so the file stands alone."""
     programs = []
     for placement in placements:
@@ -320,6 +320,7 @@ def save_project(path, sheet, placements):
     data = {
         "version": PROJECT_VERSION,
         "sheet": {"corners": [list(corner) for corner in sheet.corners]},
+        "allow_overlaps": bool(allow_overlaps),
         "programs": [{"name": p.name, "text": p.text} for p in programs],
         "figures": [{"program": programs.index(p.program), "x": p.x, "y": p.y, "angle": p.angle,
                      "cut": p.cut} for p in placements],
@@ -328,8 +329,9 @@ def save_project(path, sheet, placements):
         json.dump(data, handle, indent=1, ensure_ascii=False)
 
 
-def load_project(path):
-    """Return (sheet, placements). Version 1 files hold a width and height instead of corners."""
+def load_project(path, with_options=False):
+    """Return (sheet, placements), and with_options a dict of the nest's settings as well.
+    Version 1 files hold a width and height instead of corners."""
     with open(path, encoding="utf-8") as handle:
         data = json.load(handle)
     version = data.get("version")
@@ -342,4 +344,6 @@ def load_project(path):
     programs = [Program(p["name"], p["text"]) for p in data["programs"]]
     placements = [Placement(programs[f["program"]], f["x"], f["y"], f["angle"], f.get("cut", True))
                   for f in data["figures"]]
+    if with_options:
+        return sheet, placements, {"allow_overlaps": bool(data.get("allow_overlaps", False))}
     return sheet, placements
