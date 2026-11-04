@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """The live export that QtPlasmaC's PLASMANEST tab loads when going to MAIN. No Qt here.
 
 PlasmaNest writes the G-code first and then a small status file, each under a temporary name that

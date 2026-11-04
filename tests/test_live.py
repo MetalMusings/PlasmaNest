@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """The live export between PlasmaNest and the QtPlasmaC tab."""
 
 import json
@@ -13,7 +14,7 @@ sys.path.insert(0, os.path.join(ROOT, "qtplasmac"))
 
 from plasmanest import live
 
-FLANS = os.path.join(ROOT, "samples", "flans.ngc")
+FLANGE = os.path.join(ROOT, "samples", "flange.ngc")
 
 
 @pytest.fixture(autouse=True)
@@ -83,7 +84,7 @@ def window(app):
 
 
 def test_not_embedded_writes_nothing(window, tmp_path, monkeypatch):
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     assert not window.autoload.isVisibleTo(window)
     assert not getattr(window, "live_dir", None)
 
@@ -94,7 +95,7 @@ def test_embedded_window_keeps_the_export_up_to_date(window, tmp_path):
     window.enable_live_export(d)
     assert window.autoload.isVisibleTo(window)
     assert live.read(d)["parts"] == 0
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     status = live.read(d)
     assert status["parts"] == 1 and status["problems"] == [] and status["autoload"]
     assert open(status["gcode"]).read() == export_gcode([p.placement for p in window.parts])
@@ -115,7 +116,7 @@ def test_only_figures_checked_in_the_list_go_to_qtplasmac(window, tmp_path):
     from PyQt5.QtCore import Qt
     d = str(tmp_path)
     window.enable_live_export(d)
-    window.load_paths([FLANS, FLANS, FLANS])
+    window.load_paths([FLANGE, FLANGE, FLANGE])
     first, second, third = window.parts
     assert all(window.part_list.item(i).checkState() == Qt.Checked for i in range(3))
     window.part_list.item(1).setCheckState(Qt.Unchecked)
@@ -158,7 +159,7 @@ def test_overlaps_can_be_allowed_to_go_to_qtplasmac(window, tmp_path, monkeypatc
     from plasmanest import gui
     d = str(tmp_path)
     window.enable_live_export(d)
-    window.load_paths([FLANS, FLANS])
+    window.load_paths([FLANGE, FLANGE])
     first, second = window.parts
     second.set_center(first.placement.x, first.placement.y)
     window.refresh()

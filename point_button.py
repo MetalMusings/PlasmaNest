@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Save a sheet corner from a button on a pendant or gamepad, like the save point user button in QtPlasmaC.
 
 Load it from a postgui HAL file, without -W, so a failure here never stops LinuxCNC from starting:

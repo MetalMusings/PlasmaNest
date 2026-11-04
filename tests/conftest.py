@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """The tests must not depend on whether LinuxCNC, or QtPlasmaC's simulator, happens to be running
 on this computer: by default they see none. A test that wants one patches find_ini itself."""
 

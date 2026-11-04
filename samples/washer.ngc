@@ -1,4 +1,4 @@
-;Exempel: bricka, diameter 40 mm, hal 20 mm, ytterkontur med R-bagar
+;Example: washer, diameter 40 mm, hole 20 mm, outer contour with R arcs
 G21
 G40 G49 G80 G90 G92.1 G94 G97
 M190 P2

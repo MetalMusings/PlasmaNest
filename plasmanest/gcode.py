@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Parser for G-code written for LinuxCNC/QtPlasmaC.
 
 The parser turns a file into a list of operations in millimetres. Every XY move

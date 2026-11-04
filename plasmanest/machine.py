@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Sheet corners measured on the machine: a points file written from QtPlasmaC, read by PlasmaNest.
 
 Points are stored in machine coordinates, so the sheet stays right if the work origin is changed

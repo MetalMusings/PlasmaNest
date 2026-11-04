@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Embed PlasmaNest in a tab the way QtVCP does, to try embedding without QtPlasmaC.
 
 Mirrors embed_program in qtvcp/widgets/xembed.py (LinuxCNC 2.9.4): start the program with

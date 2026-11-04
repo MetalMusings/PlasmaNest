@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Save the machine position as a sheet corner for PlasmaNest.
 
 Run from a QtPlasmaC user button:  %/path/to/plasmanest/save_point.py

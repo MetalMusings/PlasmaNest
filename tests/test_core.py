@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 import json
 import math
 import os
@@ -74,7 +75,7 @@ def test_export_matches_transformed_source(angle):
 
 @pytest.mark.parametrize("angle", [0, 17, 90, 123.456])
 def test_arcs_stay_within_linuxcnc_radius_tolerance(angle):
-    out = reparse([Placement(load_program(os.path.join(SAMPLES, "flans.ngc")), 1234.5678, 987.654, angle)])
+    out = reparse([Placement(load_program(os.path.join(SAMPLES, "flange.ngc")), 1234.5678, 987.654, angle)])
     arcs = [m for m in moves(out) if m.center is not None]
     assert arcs
     for arc in arcs:
@@ -238,7 +239,7 @@ def test_already_filtered_file_is_refused():
 
 def test_export_has_no_constructs_the_filter_rejects():
     text = export_gcode([Placement(load_program(os.path.join(SAMPLES, n)), 100, 100, 30)
-                         for n in ("flans.ngc", "bricka.ngc")])
+                         for n in ("flange.ngc", "washer.ngc")])
     assert "G92 " not in text.replace("G92.1", "")
     assert not any(" R" in l for l in text.splitlines() if not l.startswith(";"))
     # Every M3 must be preceded by a G0/G1 XY move since the last M5.
@@ -472,9 +473,14 @@ def test_too_small_rectangle_is_refused():
 def test_rectangles_are_recognised_but_not_other_figures():
     from plasmanest.shapes import Rectangle, rectangle_of, rectangle_program
     assert rectangle_of(rectangle_program(100, 50, 340, 130)) == Rectangle(100, 50, 240, 80)
-    assert rectangle_of(load_program(os.path.join(SAMPLES, "flans.ngc"))) is None
+    assert rectangle_of(load_program(os.path.join(SAMPLES, "flange.ngc"))) is None
     tampered = rectangle_program(0, 0, 10, 10).text.replace("G1 X10 Y10", "G1 X12 Y10")
     assert rectangle_of(Program("x", tampered)) is None
+
+
+def flat(points):
+    """Points as one list of numbers: newer pytest compares no nested data with approx."""
+    return [value for point in points for value in point]
 
 
 def test_outside_cut_moves_out_half_the_kerf_clockwise_with_leadin_from_outside():
@@ -484,8 +490,8 @@ def test_outside_cut_moves_out_half_the_kerf_clockwise_with_leadin_from_outside(
     assert rectangle_of(program) == r
     assert "M190 P3" in program.text and "M66 P3 L3 Q1" in program.text
     cut, = [p for p in program.paths if p.kind == "cut"]
-    assert cut.points == pytest.approx([(95.4, 90), (99.4, 90), (99.4, 130.6), (340.6, 130.6), (340.6, 49.4),
-                                        (99.4, 49.4), (99.4, 90)])
+    assert flat(cut.points) == pytest.approx(flat([(95.4, 90), (99.4, 90), (99.4, 130.6), (340.6, 130.6),
+                                                   (340.6, 49.4), (99.4, 49.4), (99.4, 90)]))
 
 
 def test_inside_cut_moves_in_half_the_kerf_counter_clockwise_with_leadin_from_inside():
@@ -494,8 +500,8 @@ def test_inside_cut_moves_in_half_the_kerf_counter_clockwise_with_leadin_from_in
     program = r.program()
     assert rectangle_of(program) == r and program.name == "Hole 50 × 30"
     cut, = [p for p in program.paths if p.kind == "cut"]
-    assert cut.points == pytest.approx([(25, 5.8), (25, 0.8), (49.2, 0.8), (49.2, 29.2), (0.8, 29.2),
-                                        (0.8, 0.8), (25, 0.8)])
+    assert flat(cut.points) == pytest.approx(flat([(25, 5.8), (25, 0.8), (49.2, 0.8), (49.2, 29.2), (0.8, 29.2),
+                                                   (0.8, 0.8), (25, 0.8)]))
 
 
 def test_impossible_rectangles_are_refused():
@@ -519,7 +525,7 @@ def test_nearest_edge_for_the_leadin():
 
 
 def test_placement_unmaps_what_it_maps():
-    program = load_program(os.path.join(SAMPLES, "flans.ngc"))
+    program = load_program(os.path.join(SAMPLES, "flange.ngc"))
     placement = Placement(program, 300, 200, 37)
     assert placement.unmap_point(placement.map_point((12.5, -3))) == pytest.approx((12.5, -3))
 

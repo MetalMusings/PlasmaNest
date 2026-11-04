@@ -1,31 +1,178 @@
 # PlasmaNest
 
-Manual nesting of G-code for LinuxCNC/QtPlasmaC. Load one or more G-code files, place the figures
-on a steel sheet and export a single `.ngc` file that QtPlasmaC can run.
+[![tests](https://github.com/MetalMusings/plasmanest/actions/workflows/tests.yml/badge.svg)](https://github.com/MetalMusings/plasmanest/actions/workflows/tests.yml)
 
-## Installation
+Manual nesting of G-code for [LinuxCNC](https://linuxcnc.org) /
+[QtPlasmaC](https://linuxcnc.org/docs/2.9/html/plasma/qtplasmac.html). Load G-code files, draw your
+own parts and holes, place them on the sheet and send one nest straight to QtPlasmaC.
 
-Needs Python 3.7 or later and PyQt5.
+PlasmaNest runs on its own, or as a **PLASMANEST tab inside QtPlasmaC**: draw or place figures in
+the tab, go to MAIN, and the nest is in the preview, ready to cut.
 
-**Windows 11**
+![PlasmaNest in QtPlasmaC's colours: a part with a hole circle, a centre hole and a slot, an L-shaped
+polygon, copies of loaded G-code and a figure left out of the cut](docs/screenshot.png)
+
+## Features
+
+- **Load G-code** from your CAM program or QtPlasmaC's CONVERSATIONAL, copy, move and rotate it,
+  and set the cutting order. Files that cannot be moved safely are refused rather than guessed at.
+- **Draw figures:** rectangles, circles, hole circles, slots and polygons, as parts or holes. The
+  kerf comes from QtPlasmaC's material file, and lead-ins are placed by pointing at the outline.
+- **Small holes** under 30 mm are cut at 60 % speed, with half-circle lead-in and lead-out.
+- **Resize by dragging** a drawn figure's outline, or type exact sizes.
+- **Sheets** of any shape: typed, drawn, or measured on the machine by jogging to its corners.
+- **Checks** for figures outside the sheet and overlapping figures, before anything is cut.
+- **Choose what to cut** with a check box per figure; the rest stays in the nest for later.
+- **Exports** a single `.ngc` that QtPlasmaC's G-code filter accepts, and saves projects
+  (`.pnest`) that hold the G-code itself.
+- QtPlasmaC's own colours, in the tab and in its own window.
+
+## Status
+
+PlasmaNest is young, and written for one machine. It has been tested with LinuxCNC 2.9.4 on Debian
+13 (Python 3.13), in QtPlasmaC's simulator and on a real machine with the torch disabled. The tab
+relies on parts of QtPlasmaC that are not documented and may change in later versions.
+
+**Always check the preview in QtPlasmaC, and do a dry run with TORCH ENABLE off, before cutting.**
+PlasmaNest comes with no warranty; see [LICENSE](LICENSE).
+
+## Installing on QtPlasmaC 2.9
+
+A standard LinuxCNC 2.9 installation with QtPlasmaC already has everything PlasmaNest needs
+(Python 3, PyQt5 and python3-xlib). Nothing has to be installed with apt.
+
+### 1. Get PlasmaNest
 
 ```bash
-python -m pip install -r requirements.txt
+git clone https://github.com/MetalMusings/plasmanest.git ~/plasmanest
 ```
 
-Start with `start.bat`, or with `python plasmanest.py`.
+Any other directory works too; change `~/plasmanest` below to match.
 
-**Debian** (the same package QtPlasmaC itself uses)
+### 2. Try it on its own
 
 ```bash
-sudo apt install python3-pyqt5
+python3 ~/plasmanest/plasmanest.py
 ```
+
+With LinuxCNC running, PlasmaNest reads QtPlasmaC's materials and colours, and starts with a sheet
+as large as the machine's work area. The files in `samples/` are good for trying it out.
+
+### 3. Try the tab in the simulator first (recommended)
+
+LinuxCNC ships a QtPlasmaC simulator. Make your own copy of it, so nothing in your machine's
+configuration changes:
 
 ```bash
-sh start.sh
+mkdir -p ~/linuxcnc/configs
+cp -r /usr/share/doc/linuxcnc/examples/sample-configs/sim/qtplasmac ~/linuxcnc/configs/qtplasmac-sim
 ```
 
-The files in `samples/` are good for trying it out.
+Add the tab as in step 4, to `~/linuxcnc/configs/qtplasmac-sim/qtplasmac_l_metric.ini`, and start
+it with
+
+```bash
+linuxcnc ~/linuxcnc/configs/qtplasmac-sim/qtplasmac_l_metric.ini
+```
+
+The simulator's E-stop is on its own small panel. Close your machine's LinuxCNC first: the two
+cannot run at the same time.
+
+### 4. Add the PLASMANEST tab
+
+Make a backup of your machine's INI file, for example `~/linuxcnc/configs/<machine>/<machine>.ini`,
+and add this line under `[DISPLAY]`:
+
+```ini
+USER_COMMAND_FILE = ~/plasmanest/qtplasmac/user_command.py
+```
+
+Restart LinuxCNC. The tab **PLASMANEST** appears after QtPlasmaC's own tabs.
+
+- PlasmaNest starts when the tab is first chosen and ends with QtPlasmaC. It runs as a program of
+  its own, so an error in PlasmaNest does not affect QtPlasmaC.
+- When you go from PLASMANEST to MAIN, the nest is loaded into the preview. That only happens if it
+  has changed and the machine is idle. Figures outside the sheet, overlaps and material warnings
+  give an error message instead. The **Load into QtPlasmaC when going to MAIN** check box turns this
+  off.
+- The tab is locked while the machine runs, like QtPlasmaC's other tabs. While a program is paused
+  the tab may stay open, but nothing is loaded into MAIN until the machine is idle again.
+- The nest is written to `~/linuxcnc/nc_files/plasmanest/current.ngc` for QtPlasmaC to load.
+  Unsaved work is saved in `~/.plasmanest/autosave.pnest` when QtPlasmaC closes.
+
+### 5. Optional: put PLASMANEST in CONVERSATIONAL's place
+
+QtPlasmaC can hide its CONVERSATIONAL tab. Add this line at the end of your configuration's
+`custom_postgui.hal`, and restart LinuxCNC:
+
+```
+setp qtplasmac.conv_disable 1
+```
+
+PLASMANEST then sits right after MAIN, and PlasmaNest hides its **Get from CONVERSATIONAL** button.
+Shapes from QtPlasmaC's conversational wizards are then no longer available, and neither is the
+editing of saved conversational files.
+
+### Removing it
+
+Delete the `USER_COMMAND_FILE` line (and the `conv_disable` line, if you added it) and restart
+LinuxCNC.
+
+### Troubleshooting
+
+- The tab writes a log to `~/.plasmanest/qtplasmac-tab.log`. QtVCP's own log is `~/qtvcp.log`.
+- If the tab only shows a message, press **Start PlasmaNest** in it, or run
+  `python3 ~/plasmanest/plasmanest.py` in a terminal to see any error.
+
+## Optional: user buttons and a pendant
+
+### Save sheet corners from the machine
+
+Add a button in QtPlasmaC under **SETTINGS** → **USER BUTTONS**, on a free row, and press **Save**:
+
+| Name | Code |
+|---|---|
+| `Save\point` | `%~/plasmanest/save_point.py` |
+
+QtPlasmaC only runs it with Python if the command ends in `.py`, so it takes no arguments.
+
+- The machine must be homed. Each press saves a point, which shows up in PlasmaNest under
+  **From the machine…**. QtPlasmaC only shows a message if the point could not be saved.
+- With the laser on (the **Laser** button) the point under the laser cross is saved, otherwise the
+  point under the torch. The laser's offset is read from `[LASER_OFFSET]` in QtPlasmaC's prefs file.
+- The points are saved in `~/.plasmanest/points.txt` in **machine coordinates**. PlasmaNest converts
+  them with the origin LinuxCNC has when the sheet is made, so the origin can be zeroed after
+  measuring. If you zero the origin after the sheet has been made, make the sheet again.
+- Take the corners in order around the sheet. **Clear all** before measuring a new sheet.
+- The safety margin moves each edge inwards. If the margin makes the shape invalid, the sheet is
+  refused.
+
+### Save a point from a pendant or gamepad
+
+A button on a pendant can save the point the same way. Add a line at the end of
+`custom_postgui.hal` and restart LinuxCNC:
+
+```
+loadusr python3 /home/<user>/plasmanest/point_button.py input.0.btn-start
+```
+
+The last word is the button's HAL pin: `input.0.btn-start` is START on a Logitech F310 through
+`hal_input`. The script only reads the pin and does not reconnect anything. It is loaded without
+`-W`, so LinuxCNC starts even if the script is missing. Errors are shown in QtPlasmaC.
+
+### Open the latest export with a button
+
+On a Linux computer with `~/linuxcnc/nc_files`, **Export** suggests the directory
+`~/linuxcnc/nc_files/plasmanest/`. A user button with QtPlasmaC's built-in `latest-file` code opens
+the newest `.ngc` file there:
+
+| Name | Code |
+|---|---|
+| `Load\nest` | `latest-file /home/<user>/linuxcnc/nc_files/plasmanest` |
+
+Write the path out in full: `latest-file` does not understand `~`. The directory must not contain
+spaces, and the button only works when the machine is idle. If you
+export elsewhere the button does not find the file, and PlasmaNest's status bar says so.
 
 ## Use
 
@@ -35,7 +182,7 @@ The files in `samples/` are good for trying it out.
 | Rectangular sheet | Width and height in the panel. The sheet's lower left corner is G-code X0 Y0. At start the sheet is as large as QtPlasmaC's work area, the X and Y travel in its INI file; without LinuxCNC it is 3000 × 1500 mm. |
 | Draw the sheet | **Draw**, and click the corners with the mouse. Finish with a double click, Enter or a click on the first corner. Backspace removes the latest corner, Esc cancels and Shift gives straight edges. The corners land on whole millimetres. |
 | Type the sheet's corners | **Corners…** shows the corners in a table, where you can change, add and remove them. Use it for exact sizes. |
-| Sheet from the machine | Jog to the corners of the sheet and press the **save point** user button in QtPlasmaC at each one. Open **From the machine…** in PlasmaNest, where the points appear one by one in a table and a drawing. The drawing shows the edges, the latest point and the sheet after the margin. Choose a safety margin and press **Use as sheet**. See below for how to add the button. |
+| Sheet from the machine | Jog to the corners of the sheet and press the **save point** user button in QtPlasmaC at each one. Open **From the machine…** in PlasmaNest, where the points appear one by one in a table and a drawing. The drawing shows the edges, the latest point and the sheet after the margin. Choose a safety margin and press **Use as sheet**. See [Optional: user buttons and a pendant](#optional-user-buttons-and-a-pendant) for the button. |
 | Back to a rectangle | **Rectangle** gives a rectangle with the polygon's outer size, with its corner at X0 Y0. |
 | Move | Drag with the left mouse button, type X/Y in the panel, or use the arrow keys (1 mm, 10 mm with Shift). |
 | Rotate | Hold the right mouse button on the figure and drag around it, and the figure follows the pointer (Ctrl gives 15° steps). The green ring, Shift+mouse wheel, the R key, the buttons in the panel and typing the angle also work. |
@@ -65,73 +212,12 @@ It need not lie at G-code X0 Y0, which is shown with a purple cross, but the cor
 must match how the sheet lies in the machine. The sheet's shape is only a check: it does not change
 the G-code, and QtPlasmaC does not know about it.
 
-## Saving the sheet's corners from the machine
+The sheet can have any shape as long as its edges do not cross, for example an offcut with a notch.
+It need not lie at G-code X0 Y0, which is shown with a purple cross, but the corners' coordinates
+must match how the sheet lies in the machine. The sheet's shape is only a check: it does not change
+the G-code, and QtPlasmaC does not know about it.
 
-Add the button once in QtPlasmaC, under **SETTINGS** → **USER BUTTONS** on a free row:
-
-| Name | Code |
-|---|---|
-| `Save\point` | `%/home/debian/src/plasmanest/save_point.py` |
-
-Press **Save**, and the button appears on the MAIN tab. Change the path if PlasmaNest is somewhere
-else.
-
-- The machine must be homed. Each press saves a point, which shows up in PlasmaNest. QtPlasmaC only
-  shows a message if the point could not be saved.
-- With the laser on (the **Laser** button) the point under the laser cross is saved, otherwise the
-  point under the torch. The laser's offset is read from `[LASER_OFFSET]` in QtPlasmaC's prefs file.
-- The points are saved in `~/.plasmanest/points.txt` in **machine coordinates**. PlasmaNest converts
-  them with the origin LinuxCNC has when the sheet is made, so the origin can be zeroed after
-  measuring. If you zero the origin after the sheet has been made, make the sheet again.
-- Take the corners in order around the sheet. **Clear all** before measuring a new sheet.
-- The safety margin moves each edge inwards. If the margin makes the shape invalid, the sheet is
-  refused.
-
-### Saving a point from a pendant
-
-A button on a pendant or gamepad can save the point the same way. Add a line at the end of the
-postgui HAL file (here `custom_postgui.hal`) and restart LinuxCNC:
-
-```
-loadusr python3 /home/debian/src/plasmanest/point_button.py input.0.btn-start
-```
-
-The last word is the button's HAL pin. `input.0.btn-start` is START on a Logitech F310 through
-`hal_input`. The script only reads the pin and does not reconnect anything. It is loaded without
-`-W`, so LinuxCNC starts even if the script is missing. Errors are shown in QtPlasmaC.
-
-## Opening the export in QtPlasmaC with a button
-
-On a Linux computer with `~/linuxcnc/nc_files`, **Export** suggests the directory
-`~/linuxcnc/nc_files/plasmanest/`. Add a button in QtPlasmaC under **SETTINGS** → **USER BUTTONS**:
-
-| Name | Code |
-|---|---|
-| `Load\nest` | `latest-file /home/debian/linuxcnc/nc_files/plasmanest` |
-
-The button opens the latest exported `.ngc` file in the directory. It only works when the machine
-is idle. If you export to another directory the button does not find the file, and PlasmaNest's
-status bar says so.
-
-## PlasmaNest as a tab in QtPlasmaC
-
-PlasmaNest can be shown as the **PLASMANEST** tab in QtPlasmaC (2.9). So far it has only been tried
-in QtPlasmaC's simulator. Add this under `[DISPLAY]` in the INI file and restart LinuxCNC:
-
-```
-USER_COMMAND_FILE = /home/debian/src/plasmanest/qtplasmac/user_command.py
-```
-
-- PlasmaNest starts when the tab is first chosen and ends with QtPlasmaC. It runs as a program of
-  its own, so an error in PlasmaNest does not affect QtPlasmaC.
-- When you go from PLASMANEST to MAIN, the nest is loaded into the preview. That only happens if
-  it has changed and the machine is idle. Figures outside the sheet, overlaps and material warnings
-  give an error message instead. The **Load into QtPlasmaC when going to MAIN** check box turns
-  this off.
-- The tab is locked while the machine runs, like QtPlasmaC's other tabs.
-- Unsaved work is saved in `~/.plasmanest/autosave.pnest` when QtPlasmaC closes.
-
-## Rectangles, circles, hole circles and slots drawn in PlasmaNest
+### Figures drawn in PlasmaNest
 
 When a drawn figure is selected, the panel shows the **Rectangle**, **Circle**, **Hole circle** or
 **Slot** box:
@@ -159,18 +245,13 @@ When a drawn figure is selected, the panel shows the **Rectangle**, **Circle**, 
 - An impossible setting is refused with a red message, for example a lead-in that does not fit in
   the hole.
 
-## Look
-
-PlasmaNest has QtPlasmaC's colours, read from QtPlasmaC's settings (`[COLOR_OPTIONS]`). If the
-colours change in QtPlasmaC, PlasmaNest follows at its next start.
-
-## Two kinds of files
+### Two kinds of files
 
 - **Export to QtPlasmaC (.ngc)**, Ctrl+E: the file you open in QtPlasmaC and cut with.
 - **Save project (.pnest)**, Ctrl+S: your placement, to carry on working later. The file also holds
   the G-code, so it works even if the original files move. QtPlasmaC cannot read it.
 
-## What the export does to the G-code
+### What the export does to the G-code
 
 - All coordinates are converted to their final values, and arc centres (I/J) are rotated too.
 - The file is always in millimetres with a single program end (`M2`). Inch files are converted to
@@ -181,7 +262,7 @@ colours change in QtPlasmaC, PlasmaNest follows at its next start.
   `(o=2…)` are moved to the start of the file, since QtPlasmaC needs that.
 - Moves after the last cut (for example parking) are removed from each figure.
 
-## G-code that cannot be loaded
+### G-code that cannot be loaded
 
 Files that cannot be moved safely are refused with a line number, rather than giving a wrong cut:
 
@@ -192,15 +273,45 @@ Files that cannot be moved safely are refused with a line number, rather than gi
 
 Simple expressions and your own parameters, for example `X[#<w>/2]`, are worked out and are fine.
 
-## Tests
+## Running PlasmaNest elsewhere
+
+PlasmaNest also runs without LinuxCNC, for example to prepare nests on another computer. It needs
+Python 3.9 or later and PyQt5:
+
+```bash
+python -m pip install -r requirements.txt
+python plasmanest.py
+```
+
+On Windows, `start.bat` starts it; on Linux, `sh start.sh`. Without LinuxCNC there are no materials
+or machine colours, and the sheet starts at 3000 × 1500 mm.
+
+## Development
 
 ```bash
 python -m pip install pytest
-```
-
-```bash
 python -m pytest tests
 ```
 
-On Windows one test is skipped in windowless mode. It runs with `QT_QPA_PLATFORM=windows` set,
-and then real windows open for a moment.
+The tests need no LinuxCNC and no screen: Qt runs offscreen. `QT_QPA_PLATFORM=xcb` runs them in real
+windows. On Windows one test is skipped in windowless mode.
+
+| Path | What |
+|---|---|
+| `plasmanest/gcode.py` | Reads G-code into moves in mm, and refuses what cannot be moved safely. |
+| `plasmanest/nest.py` | Placements, the sheet, the export and project files. |
+| `plasmanest/shapes.py` | The figures drawn in PlasmaNest, written as G-code. |
+| `plasmanest/gui.py` | The user interface. |
+| `plasmanest/live.py` | The files the tab hands to QtPlasmaC. |
+| `plasmanest/machine.py`, `save_point.py`, `point_button.py` | Sheet corners from the machine. |
+| `plasmanest/materials.py`, `plasmanest/theme.py` | QtPlasmaC's materials, work area and colours. |
+| `qtplasmac/` | The script QtPlasmaC runs to add the tab. |
+| `tools/embed_host.py` | Embeds PlasmaNest as QtVCP does, to try the tab without QtPlasmaC. |
+
+Bug reports and suggestions are welcome as GitHub issues.
+
+## License
+
+PlasmaNest is free software: you can redistribute it and/or modify it under the terms of the GNU
+General Public License as published by the Free Software Foundation, either version 2 of the
+License, or (at your option) any later version. See [LICENSE](LICENSE).

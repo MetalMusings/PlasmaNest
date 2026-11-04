@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Qt user interface. The scene uses G-code coordinates in mm; the view flips Y."""
 
 import math

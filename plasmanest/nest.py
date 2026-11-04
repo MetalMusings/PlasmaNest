@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Placement of parsed programs on a sheet, export to G-code and project files."""
 
 import json

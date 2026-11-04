@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """QtPlasmaC's look: colours from its preferences file and a style sheet in the same spirit. No Qt.
 
 QtPlasmaC builds its style sheet from [COLOR_OPTIONS] in <MACHINE>.prefs. PlasmaNest reads the

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 # QtPlasmaC user command file for PlasmaNest. In the INI file, under [DISPLAY]:
 #
 #     USER_COMMAND_FILE = /path/to/plasmanest/qtplasmac/user_command.py

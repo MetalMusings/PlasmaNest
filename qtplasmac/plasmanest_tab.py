@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """A PLASMANEST tab in QtPlasmaC (2.9.4) with PlasmaNest embedded as its own program.
 
 Loaded through user_command.py, which QtVCP runs from USER_COMMAND_FILE after the screen is built.

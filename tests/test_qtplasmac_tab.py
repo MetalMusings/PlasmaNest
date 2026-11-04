@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """The QtPlasmaC tab glue, with a stand-in for QtPlasmaC's handler."""
 
 import os

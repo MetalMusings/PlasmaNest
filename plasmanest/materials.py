@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """QtPlasmaC's material file: numbers, names and kerf widths, and the machine's work area from
 its INI file. Read only, no Qt."""
 

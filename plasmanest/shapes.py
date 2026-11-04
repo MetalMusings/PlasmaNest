@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 """Figures made in PlasmaNest itself, written as G-code so they work like any loaded file. No Qt.
 
 A rectangle keeps its settings in its own G-code, on a comment line, so they survive project

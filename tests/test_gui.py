@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
 import math
 import os
 import sys
@@ -18,8 +19,8 @@ from plasmanest.gui import ROTATE_MIN_RADIUS, CornerDialog, MainWindow
 from plasmanest.nest import Sheet
 
 SAMPLES = os.path.join(os.path.dirname(__file__), "..", "samples")
-FLANS = os.path.join(SAMPLES, "flans.ngc")
-BRICKA = os.path.join(SAMPLES, "bricka.ngc")
+FLANGE = os.path.join(SAMPLES, "flange.ngc")
+WASHER = os.path.join(SAMPLES, "washer.ngc")
 
 
 @pytest.fixture(scope="module")
@@ -75,14 +76,14 @@ def test_warning_dialog_does_not_crash(window, tmp_path):
 
 
 def test_load_places_figures_on_the_sheet_without_overlap(window):
-    window.load_paths([FLANS, BRICKA])
+    window.load_paths([FLANGE, WASHER])
     window.refresh()
     assert len(window.parts) == 2
     assert window.outside_count == 0 and window.overlap_count == 0
 
 
 def test_drag_moves_figure_with_mouse(window):
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     part = window.parts[0]
     window.scene_.clearSelection()
     x0, y0 = part.placement.x, part.placement.y
@@ -96,7 +97,7 @@ def test_drag_moves_figure_with_mouse(window):
 
 
 def test_handle_rotates_figure(window):
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     part = window.parts[0]
     part.setSelected(True)
     window.update_handles()
@@ -118,7 +119,7 @@ def test_handle_rotates_figure(window):
 
 
 def test_copy_delete_and_undo(window):
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     window.copy_parts(window.selected_parts(), 3)
     assert len(window.parts) == 4
     assert window.overlap_count == 0
@@ -157,7 +158,7 @@ def test_part_in_hole_is_allowed_but_real_overlap_is_flagged(window):
 
 
 def test_outside_sheet_is_flagged(window):
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     window.parts[0].set_center(-500, -500)
     window.refresh()
     assert window.outside_count == 1
@@ -165,7 +166,7 @@ def test_outside_sheet_is_flagged(window):
 
 
 def test_sheet_change_flags_figures(window):
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     window.parts[0].set_center(2900, 100)
     window.sheet_width.setValue(1000)
     window.sheet_changed()
@@ -173,7 +174,7 @@ def test_sheet_change_flags_figures(window):
 
 
 def test_project_and_export_round_trip(window, tmp_path):
-    window.load_paths([FLANS, BRICKA])
+    window.load_paths([FLANGE, WASHER])
     window.parts[0].set_angle(33)
     window.parts[1].set_center(700, 400)
     window.refresh()
@@ -196,17 +197,17 @@ def test_project_and_export_round_trip(window, tmp_path):
 
 
 def test_reorder_changes_cut_order(window):
-    window.load_paths([FLANS, BRICKA])
+    window.load_paths([FLANGE, WASHER])
     window.scene_.clearSelection()
     window.parts[1].setSelected(True)
     window.reorder(-1)
-    assert window.parts[0].placement.program.name == "bricka.ngc"
+    assert window.parts[0].placement.program.name == "washer.ngc"
     assert window.parts[0].label.text() == "1"
-    assert window.part_list.item(0).text().startswith("1.  bricka")
+    assert window.part_list.item(0).text().startswith("1.  washer")
 
 
 def test_placement_fields_set_lower_left_corner(window):
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     part = window.parts[0]
     part.setSelected(True)
     window.pos_x.setValue(300)
@@ -216,7 +217,7 @@ def test_placement_fields_set_lower_left_corner(window):
 
 
 def test_screenshot(window, tmp_path_factory):
-    window.load_paths([FLANS, BRICKA])
+    window.load_paths([FLANGE, WASHER])
     window.copy_parts([window.parts[0]], 2)
     window.parts[1].set_angle(30)
     window.parts[-1].set_center(400, 500)
@@ -253,7 +254,7 @@ def small_sheet(window):
     window.sheet_width.setValue(400)
     window.sheet_height.setValue(250)
     window.sheet_changed()
-    window.load_paths([FLANS, BRICKA])
+    window.load_paths([FLANGE, WASHER])
     window.scene_.clearSelection()
     window.parts[0].set_center(120, 80)
     window.parts[1].set_center(300, 150)
@@ -452,7 +453,7 @@ def test_shift_gives_straight_edges(coarse):
 
 
 def test_drawing_does_not_move_or_select_figures(coarse):
-    coarse.load_paths([FLANS])
+    coarse.load_paths([FLANGE])
     part = coarse.parts[0]
     coarse.scene_.clearSelection()
     pose = (part.placement.x, part.placement.y)
@@ -467,7 +468,7 @@ def test_drawing_does_not_move_or_select_figures(coarse):
 
 
 def test_right_drag_on_a_figure_while_drawing_does_not_rotate_it(coarse):
-    coarse.load_paths([FLANS])
+    coarse.load_paths([FLANGE])
     part = coarse.parts[0]
     coarse.scene_.clearSelection()
     coarse.toggle_drawing()
@@ -479,7 +480,7 @@ def test_right_drag_on_a_figure_while_drawing_does_not_rotate_it(coarse):
 
 def test_polygon_decides_what_is_outside(window):
     window.set_sheet(Sheet(OFFCUT))
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     part = window.parts[0]
     part.set_center(300, 150)
     window.refresh()
@@ -495,7 +496,7 @@ def test_polygon_decides_what_is_outside(window):
 
 def test_new_figures_are_placed_on_the_polygon(window):
     window.set_sheet(Sheet(OFFCUT))
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     window.copy_parts(window.parts, 11)
     assert len(window.parts) == 12
     assert window.outside_count == 0 and window.overlap_count == 0
@@ -504,7 +505,7 @@ def test_new_figures_are_placed_on_the_polygon(window):
 def test_placement_finds_the_arm_beside_a_notch(window):
     # 105 mm wide figure on a 120 mm sheet: fits only without the usual gap to the edge.
     window.set_sheet(Sheet([(0, 0), (120, 0), (120, 400), (0, 400)]))
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     assert window.outside_count == 0
     # An L-shaped sheet: copies fill the low strip and then go up the arm.
     arm = Sheet([(0, 0), (500, 0), (500, 90), (130, 90), (130, 500), (0, 500)])
@@ -515,7 +516,7 @@ def test_placement_finds_the_arm_beside_a_notch(window):
 
 def test_figure_goes_beside_a_too_small_polygon_and_is_flagged(window):
     window.set_sheet(Sheet([(0, 0), (30, 0), (0, 30)]))
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     assert window.outside_count == 1
     assert window.parts[0].placement.bounds()[0] > 30
 
@@ -554,7 +555,7 @@ def test_undo_during_drawing_ends_the_drawing(coarse):
 
 def test_polygon_survives_project_round_trip(window, tmp_path):
     window.set_sheet(Sheet(OFFCUT))
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     project = tmp_path / "p.pnest"
     assert window.write_project(str(project))
     assert not window.is_dirty()
@@ -644,7 +645,7 @@ def test_export_goes_where_the_latest_file_button_looks(window, tmp_path, monkey
     window.project_path = str(tmp_path / "plåt 3.pnest")
     assert window.export_suggestion() == str(directory / "plåt 3.ngc")
 
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     assert window.export_to(str(directory / "a.ngc"))
     assert "latest-file" in window.statusBar().currentMessage()
     time.sleep(0.02)
@@ -682,7 +683,7 @@ def test_autosave_keeps_unsaved_work(window, tmp_path):
     from plasmanest import gui
     path = str(tmp_path / "auto" / "autosave.pnest")
     assert gui.autosave(window, path) is None
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     assert gui.autosave(window, path) == path
     window.open_project_path(path)
     assert len(window.parts) == 1
@@ -714,7 +715,7 @@ def send_with_wrong_screen_pos(win, kind, pos, button=Qt.LeftButton, buttons=Qt.
 
 
 def test_click_selects_a_figure_even_when_embedded(window):
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     part = window.parts[0]
     window.scene_.clearSelection()
     point = to_view(window, *edge_point(part))
@@ -742,7 +743,7 @@ def test_wheel_zoom_keeps_the_point_under_the_pointer_even_when_embedded(window)
 def test_tooltip_names_the_figure_even_when_embedded(window):
     from PyQt5.QtGui import QHelpEvent
     from PyQt5.QtWidgets import QToolTip
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     part = window.parts[0]
     viewport = window.view.viewport()
     point = to_view(window, *edge_point(part))
@@ -950,7 +951,7 @@ def test_exact_size_can_be_typed_right_after_drawing(window):
 
 def test_resized_rectangle_keeps_its_corner_and_cutting_order(window):
     from plasmanest.shapes import rectangle_program
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     first = window.add_shape(rectangle_program(100, 50, 340, 130))
     window.parts.remove(first)
     window.parts.insert(0, first)
@@ -964,11 +965,11 @@ def test_resized_rectangle_keeps_its_corner_and_cutting_order(window):
     assert rect.placement.program.name == "Rectangle 240 × 200"
     assert rect.placement.angle == pytest.approx(30)
     assert rect.placement.map_point((100, 50)) == pytest.approx(corner)
-    assert window.parts[1].placement.program.name == "flans.ngc"
+    assert window.parts[1].placement.program.name == "flange.ngc"
 
 
 def test_size_fields_only_for_rectangles(window):
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     window.parts[0].setSelected(True)
     assert not window.size_w.isVisibleTo(window)
 
@@ -1049,7 +1050,7 @@ def test_position_fields_of_a_rectangle_give_its_drawn_corner(window):
     assert min(x for x, _ in points) == pytest.approx(29.4) and max(x for x, _ in points) == pytest.approx(50.6)
     assert min(y for _, y in points) == pytest.approx(29.4) and max(y for _, y in points) == pytest.approx(50.6)
     # Other figures keep the bounds of the cut path.
-    window.load_paths([FLANS])
+    window.load_paths([FLANGE])
     window.scene_.clearSelection()
     window.parts[1].setSelected(True)
     assert window.pos_x_label.text() == "X (left edge):"
