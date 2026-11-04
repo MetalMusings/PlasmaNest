@@ -21,11 +21,13 @@ def rotation(angle):
 
 @dataclass
 class Placement:
-    """A figure: x, y is where the centre of the program's bounding box ends up."""
+    """A figure: x, y is where the centre of the program's bounding box ends up. Only figures with
+    cut set go to QtPlasmaC; the others stay in the nest for later."""
     program: Program
     x: float = 0.0
     y: float = 0.0
     angle: float = 0.0
+    cut: bool = True
 
     def map_point(self, point):
         c, s = rotation(self.angle)
@@ -319,8 +321,8 @@ def save_project(path, sheet, placements):
         "version": PROJECT_VERSION,
         "sheet": {"corners": [list(corner) for corner in sheet.corners]},
         "programs": [{"name": p.name, "text": p.text} for p in programs],
-        "figures": [{"program": programs.index(p.program), "x": p.x, "y": p.y, "angle": p.angle}
-                    for p in placements],
+        "figures": [{"program": programs.index(p.program), "x": p.x, "y": p.y, "angle": p.angle,
+                     "cut": p.cut} for p in placements],
     }
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=1, ensure_ascii=False)
@@ -338,5 +340,6 @@ def load_project(path):
     else:
         raise ValueError("Unknown version of the project file.")
     programs = [Program(p["name"], p["text"]) for p in data["programs"]]
-    placements = [Placement(programs[f["program"]], f["x"], f["y"], f["angle"]) for f in data["figures"]]
+    placements = [Placement(programs[f["program"]], f["x"], f["y"], f["angle"], f.get("cut", True))
+                  for f in data["figures"]]
     return sheet, placements

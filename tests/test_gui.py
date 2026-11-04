@@ -1424,3 +1424,21 @@ def test_a_small_hole_can_be_grabbed_at_its_centre(window):
     window.add_shape(Circle(200, 200, 20, inside=True, kerf=1.5).program())  # lead-in from the centre
     drag_edge(window, (200, 200), (230, 210))
     assert window.parts[0].placement.map_point((200, 200)) == pytest.approx((230, 210))
+
+
+def test_view_is_fitted_again_when_shown(window):
+    # Embedded, PlasmaNest is shown after it has been fitted, and Qt then centres the view on
+    # the last pointer position: the origin before the pointer has moved.
+    view = window.view
+    view.hide()
+    view.centerOn(0, 0)
+    view.show()
+    centre = view.mapToScene(view.viewport().rect().center())
+    assert (centre.x(), centre.y()) == (pytest.approx(1500, abs=5), pytest.approx(750, abs=5))
+    # Not when the user has chosen a view.
+    window.user_has_view = True
+    view.hide()
+    view.centerOn(0, 0)
+    view.show()
+    centre = view.mapToScene(view.viewport().rect().center())
+    assert abs(centre.x()) < 5 and abs(centre.y()) < 5

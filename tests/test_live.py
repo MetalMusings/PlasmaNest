@@ -107,6 +107,62 @@ def test_embedded_window_keeps_the_export_up_to_date(window, tmp_path):
     assert live.read(d)["autoload"] is False
 
 
+def test_only_figures_checked_in_the_list_go_to_qtplasmac(window, tmp_path):
+    from plasmanest.nest import export_gcode
+    from PyQt5.QtCore import Qt
+    d = str(tmp_path)
+    window.enable_live_export(d)
+    window.load_paths([FLANS, FLANS, FLANS])
+    first, second, third = window.parts
+    assert all(window.part_list.item(i).checkState() == Qt.Checked for i in range(3))
+    window.part_list.item(1).setCheckState(Qt.Unchecked)
+    assert not second.placement.cut and second.state == "off"
+    status = live.read(d)
+    assert status["parts"] == 2
+    assert open(status["gcode"]).read() == export_gcode([first.placement, third.placement])
+    assert "2 of 3 figures to cut" in window.status_label.text()
+    # A figure left out may lie off the sheet or on another: nothing to stop the others.
+    second.set_center(-5000, -5000)
+    window.refresh()
+    window.commit()
+    third.set_center(first.placement.x, first.placement.y)
+    window.refresh()
+    window.commit()
+    assert window.overlap_count == 2 and live.read(d)["problems"]
+    third.set_center(second.placement.x, second.placement.y)
+    window.refresh()
+    window.commit()
+    assert window.outside_count == 1  # the third, now off the sheet with the second
+    window.undo()
+    assert window.overlap_count == 2
+    window.undo()
+    window.undo()
+    assert live.read(d)["problems"] == [] and live.read(d)["parts"] == 2
+    window.undo()  # the check box
+    assert window.parts[1].placement.cut and live.read(d)["parts"] == 3
+    assert window.part_list.item(1).checkState() == Qt.Checked
+    # Copies and the export follow the check box.
+    window.part_list.item(0).setCheckState(Qt.Unchecked)
+    window.copy_parts([window.parts[0]], 1)
+    assert [p.placement.cut for p in window.parts] == [False, True, True, False]
+    path = tmp_path / "out.ngc"
+    assert window.export_to(str(path))
+    assert path.read_text() == export_gcode([window.parts[1].placement, window.parts[2].placement])
+    assert "Exported 2 figures" in window.statusBar().currentMessage()
+
+
+def test_a_figure_left_out_stays_left_out_when_remade(window):
+    from PyQt5.QtCore import Qt
+    from plasmanest.shapes import Circle, shape_of
+    window.add_shape(Circle(200, 200, 60, inside=True, kerf=1.5).program())
+    window.part_list.item(0).setCheckState(Qt.Unchecked)
+    window.parts[0].setSelected(True)
+    window.size_d.setValue(80)
+    window.size_d.editingFinished.emit()
+    assert shape_of(window.parts[0].placement.program).diameter == 80 and not window.parts[0].placement.cut
+    assert window.part_list.item(0).checkState() == Qt.Unchecked
+
+
 # ------------------------------------------------------------------ QtPlasmaC side
 
 def test_loader_loads_a_new_nest_once(tmp_path):

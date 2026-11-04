@@ -360,11 +360,12 @@ class PartItem(QGraphicsItem):
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
         selected = self.isSelected()
-        color = {"ok": COLOR_CUT, "overlap": COLOR_OVERLAP, "outside": COLOR_OUTSIDE}[self.state]
-        if selected and self.state == "ok":
+        color = {"ok": COLOR_CUT, "overlap": COLOR_OVERLAP, "outside": COLOR_OUTSIDE,
+                 "off": COLOR_RAPID}[self.state]
+        if selected and self.state in ("ok", "off"):
             color = COLOR_SELECTED
         fill = QColor(color)
-        fill.setAlpha(70 if selected else 35)
+        fill.setAlpha((70 if selected else 35) // (3 if self.state == "off" else 1))
         painter.fillPath(self.fill_path, fill)
         if self.show_rapids and not self.rapid_path.isEmpty():
             painter.setPen(cosmetic_pen(COLOR_RAPID, 1.0, Qt.DashLine))
@@ -372,7 +373,9 @@ class PartItem(QGraphicsItem):
         if not self.guide_path.isEmpty():
             painter.setPen(cosmetic_pen(color, 1.0, Qt.DotLine))
             painter.drawPath(self.guide_path)
-        painter.setPen(cosmetic_pen(color, 2.0 if selected else 1.4))
+        # Not cut: dashed, so it stays visible on the sheet without looking like part of the job.
+        style = Qt.DashLine if self.state == "off" else Qt.SolidLine
+        painter.setPen(cosmetic_pen(color, 2.0 if selected else 1.4, style))
         painter.drawPath(self.cut_path)
 
 
@@ -1007,6 +1010,14 @@ class NestView(QGraphicsView):
         if not self.window_.user_has_view:
             self.fit()
 
+    def showEvent(self, event):
+        # Qt centres the view on showing it, on the last pointer position with AnchorUnderMouse:
+        # the origin, before the pointer has moved. Embedded, PlasmaNest is shown after it has
+        # been fitted, which left the sheet's corner in the middle of the view.
+        super().showEvent(event)
+        if not self.window_.user_has_view:
+            self.fit()
+
 
 class CopyDialog(QDialog):
     def __init__(self, parent):
@@ -1456,6 +1467,7 @@ class MainWindow(QMainWindow):
         self.part_list = CompactList()
         self.part_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.part_list.itemSelectionChanged.connect(self.list_selection_changed)
+        self.part_list.itemChanged.connect(self.list_item_changed)
         parts_layout.addWidget(self.part_list)
         row = QHBoxLayout()
         self.load_button = self._button("Load…", self.load_files, row)
@@ -1696,6 +1708,18 @@ class MainWindow(QMainWindow):
         self.update_handles()
         self.update_placement_fields()
 
+    def list_item_changed(self, item):
+        """A check box in the list: whether the figure is cut."""
+        if self.updating_ui:
+            return
+        part = self.parts[self.part_list.row(item)]
+        cut = item.checkState() == Qt.Checked
+        if part.placement.cut != cut:
+            part.placement.cut = cut
+            part.update()
+            self.refresh()
+            self.commit()
+
     def list_selection_changed(self):
         if self.updating_ui:
             return
@@ -1864,7 +1888,7 @@ class MainWindow(QMainWindow):
         old = part.placement
         anchor = old.map_point(shape.anchor)
         moved = Placement(program, 0.0, 0.0, old.angle).map_point(shape.anchor)
-        placement = Placement(program, anchor[0] - moved[0], anchor[1] - moved[1], old.angle)
+        placement = Placement(program, anchor[0] - moved[0], anchor[1] - moved[1], old.angle, old.cut)
         index = self.parts.index(part)
         # Without a selection for a moment the fields would hide and lose the keyboard focus.
         self.updating_ui = True
@@ -1948,8 +1972,13 @@ class MainWindow(QMainWindow):
         self.update_travel()
         self.update_placement_fields()
 
+    def cut_parts(self):
+        return [part for part in self.parts if part.placement.cut]
+
     def check_collisions(self):
-        regions =[(part, part.sceneBoundingRect(), part.scene_region()) for part in self.parts]
+        """Overlaps and the sheet's edge, only for the figures to cut: the others may wait anywhere."""
+        cut = self.cut_parts()
+        regions = [(part, part.sceneBoundingRect(), part.scene_region()) for part in cut]
         overlapping = set()
         for i, (part_a, rect_a, region_a) in enumerate(regions):
             for part_b, rect_b, region_b in regions[i + 1:]:
@@ -1960,7 +1989,9 @@ class MainWindow(QMainWindow):
                     overlapping.add(part_b)
         outside = 0
         for part in self.parts:
-            if not part.on_sheet(self.sheet):
+            if not part.placement.cut:
+                part.set_state("off")
+            elif not part.on_sheet(self.sheet):
                 part.set_state("outside")
                 outside += 1
             elif part in overlapping:
@@ -1968,7 +1999,10 @@ class MainWindow(QMainWindow):
             else:
                 part.set_state("ok")
         self.outside_count, self.overlap_count = outside, len(overlapping)
-        messages = [plural(len(self.parts), "figure")]
+        if len(cut) == len(self.parts):
+            messages = [plural(len(self.parts), "figure")]
+        else:
+            messages = [f"{len(cut)} of {plural(len(self.parts), 'figure')} to cut"]
         if outside:
             messages.append(f"<b style='color:{COLOR_OUTSIDE.name()}'>{outside} outside the sheet</b>")
         if overlapping:
@@ -1979,7 +2013,7 @@ class MainWindow(QMainWindow):
         path = QPainterPath()
         if self.show_rapids.isChecked():
             previous = None
-            for part in self.parts:
+            for part in self.cut_parts():
                 ends = [op.move for op in part.placement.program.ops if op.kind == "move"]
                 first = part.placement.map_point(ends[0].end)
                 if previous is not None:
@@ -2001,6 +2035,9 @@ class MainWindow(QMainWindow):
             name = part.placement.program.name
             copy_numbers[name] = copy_numbers.get(name, 0) + 1
             item = QListWidgetItem(f"{row}.  {name}  (copy {copy_numbers[name]})")
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if part.placement.cut else Qt.Unchecked)
+            item.setToolTip("Checked: cut. Unchecked: kept in the nest but not sent to QtPlasmaC.")
             self.part_list.addItem(item)
             item.setSelected(part.isSelected())
             part.set_number(row)
@@ -2125,7 +2162,7 @@ class MainWindow(QMainWindow):
         for _ in range(count):
             for part in parts:
                 source = part.placement
-                placement = Placement(source.program, source.x, source.y, source.angle)
+                placement = Placement(source.program, source.x, source.y, source.angle, source.cut)
                 self.place_free(placement)
                 added.append(self.add_part(placement))
         self.after_change(added)
@@ -2310,7 +2347,7 @@ class MainWindow(QMainWindow):
     def current_state(self):
         return (self.sheet,
                 tuple((p.placement.program, round(p.placement.x, 6), round(p.placement.y, 6),
-                       round(p.placement.angle, 6)) for p in self.parts))
+                       round(p.placement.angle, 6), p.placement.cut) for p in self.parts))
 
     def commit(self):
         """Record an undo step if anything changed since the last one."""
@@ -2329,8 +2366,8 @@ class MainWindow(QMainWindow):
         self.update_sheet_panel()
         for part in list(self.parts):
             self.remove_part(part)
-        for program, x, y, angle in figures:
-            self.add_part(Placement(program, x, y, angle))
+        for program, x, y, angle, cut in figures:
+            self.add_part(Placement(program, x, y, angle, cut))
         self.rebuild_list()
         self.selection_changed()
         self.refresh()
@@ -2375,7 +2412,7 @@ class MainWindow(QMainWindow):
             problems.append(f"{plural(self.outside_count, 'figure')} outside the sheet.")
         if self.overlap_count:
             problems.append(f"{plural(self.overlap_count, 'figure')} overlapping each other.")
-        warning = material_warning([p.placement for p in self.parts])
+        warning = material_warning([p.placement for p in self.cut_parts()])
         if warning:
             problems.append(warning)
         return problems
@@ -2388,7 +2425,7 @@ class MainWindow(QMainWindow):
             return
         try:
             self.refresh()
-            placements = [p.placement for p in self.parts]
+            placements = [p.placement for p in self.cut_parts()]
             gcode = export_gcode(placements) if placements else None
             live.write(self.live_dir, gcode, len(placements), self.live_problems(), self.autoload.isChecked())
             self.live_state = state
@@ -2478,8 +2515,11 @@ class MainWindow(QMainWindow):
         if not self.parts:
             QMessageBox.information(self, APP_NAME, "There are no figures to export.")
             return
+        if not self.cut_parts():
+            QMessageBox.information(self, APP_NAME, "No figure is checked for cutting in the list.")
+            return
         self.refresh()
-        placements = [p.placement for p in self.parts]
+        placements = [p.placement for p in self.cut_parts()]
         problems = []
         if self.outside_count:
             problems.append(f"{plural(self.outside_count, 'figure')} outside the sheet.")
@@ -2521,11 +2561,11 @@ class MainWindow(QMainWindow):
         try:
             # LinuxCNC runs on Linux: always plain \n line endings.
             with open(path, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(export_gcode([p.placement for p in self.parts]))
+                handle.write(export_gcode([p.placement for p in self.cut_parts()]))
         except OSError as error:
             QMessageBox.critical(self, "Cannot export", str(error))
             return False
-        message = f"Exported {plural(len(self.parts), 'figure')} to {path}"
+        message = f"Exported {plural(len(self.cut_parts()), 'figure')} to {path}"
         directory = self.export_dir()
         if directory is not None:
             if os.path.normcase(os.path.dirname(os.path.abspath(path))) == os.path.normcase(directory):

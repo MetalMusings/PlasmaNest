@@ -48,6 +48,7 @@ The files in `samples/` are good for trying it out.
 | Copy | **Copy…** or Ctrl+D, and give the number. The copies are put in free places. |
 | Delete | **Delete** (selected figures) or **Delete the whole G-code** (all copies of the file). |
 | Cutting order | The list shows the order. Change it with **Cut earlier** and **Cut later**. |
+| Choose what to cut | Uncheck a figure in the list to leave it out: it stays in the nest, drawn grey and dashed, but is neither exported nor sent to MAIN. It is not checked for overlaps or the sheet's edge either, so it can wait beside the sheet. The check boxes are saved in the project, copies get their original's, and Space toggles the selected row. |
 | Undo | Ctrl+Z. Redo with Ctrl+Y (Linux: Ctrl+Shift+Z). |
 | View | The mouse wheel zooms, the middle button or a right drag on empty space pans, F fits to the window. |
 
