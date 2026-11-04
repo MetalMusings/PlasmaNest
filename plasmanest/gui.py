@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox
 from . import live, machine
 from .autonest import autonest, group_figures
 from .gcode import GCodeError, Program, format_number, load_program
-from .nest import Placement, Sheet, export_gcode, load_project, material_warning, save_project
+from .nest import Placement, Sheet, closed_loops, export_gcode, inside_first, load_project, material_warning, save_project
 from .materials import available_materials, machine_work_area
 from .theme import qtplasmac_colors, stylesheet
 from .shapes import (OVERCUT, SMALL_HOLE, SMALL_HOLE_SPEED, Circle, HoleCircle, Polygon, Rectangle, Slot,
@@ -102,21 +102,6 @@ def cosmetic_pen(color, width=1.0, style=Qt.SolidLine):
     pen = QPen(color, width, style)
     pen.setCosmetic(True)
     return pen
-
-
-def closed_loops(points, tolerance=1e-3):
-    """(start, end) indexes of the closed contours in a cut path, without the lead-in before or
-    the lead-out after them. A loop ends where the path comes back to a point it passed since the
-    last loop. A path with no loop counts as one, closed from its last point to its first."""
-    loops, seen = [], {}
-    for index, (x, y) in enumerate(points):
-        key = (round(x / tolerance), round(y / tolerance))
-        start = seen.get(key)
-        if start is not None and index - start >= 3:
-            loops.append((start, index))
-            seen = {}
-        seen.setdefault(key, index)
-    return loops or ([(0, len(points) - 1)] if len(points) >= 3 else [])
 
 
 def holes_within(part, region, other):
@@ -2180,7 +2165,9 @@ class MainWindow(QMainWindow):
             for part_b, rect_b, region_b in regions[i + 1:]:
                 if rect_a.intersects(rect_b) and region_a.intersects(region_b) \
                         and not holes_within(part_b, region_b, region_a) \
-                        and not holes_within(part_a, region_a, region_b):
+                        and not holes_within(part_a, region_a, region_b) \
+                        and not self.in_drawn_hole(part_a, region_a, part_b, region_b, regions) \
+                        and not self.in_drawn_hole(part_b, region_b, part_a, region_a, regions):
                     overlapping.add(part_a)
                     overlapping.add(part_b)
         outside = 0
@@ -2205,6 +2192,20 @@ class MainWindow(QMainWindow):
             allowed = " (allowed)" if self.allow_overlaps.isChecked() else ""
             messages.append(f"<b style='color:{COLOR_OVERLAP.name()}'>{len(overlapping)} overlapping{allowed}</b>")
         self.status_label.setText(" · ".join(messages))
+
+    @staticmethod
+    def in_drawn_hole(part, region, other, other_region, regions):
+        """True for a figure lying wholly in a hole drawn in PlasmaNest, when the other figure is
+        that hole or the part the hole is in: a part nested in a hole, as autonest does."""
+        for hole, rect, hole_region in regions:
+            if hole is part:
+                continue
+            shape = shape_of(hole.placement.program)
+            if shape is None or not shape.inside or not hole_region.contains(region):
+                continue
+            if hole is other or other_region.contains(hole_region):
+                return True
+        return False
 
     def update_travel(self):
         path = QPainterPath()
@@ -2398,13 +2399,24 @@ class MainWindow(QMainWindow):
             return
         finally:
             QApplication.restoreOverrideCursor()
-        parts = {id(p.placement): p for p in moving}
+        parts = {id(p.placement): p for p in self.parts}
         for move in moves:
             part = parts[id(move.placement)]
             part.set_angle(move.angle)
             part.set_center(move.x, move.y)
+        # What lies inside a contour is cut first, while the sheet round it is still attached: a
+        # part in a hole before the hole, a hole before the part's outline.
+        by_placement = {id(p.placement): p for p in self.parts}
+        old_order = list(self.parts)
+        self.parts = [by_placement[id(p)] for p in inside_first([p.placement for p in self.parts])]
+        reordered = sum(1 for a, b in zip(old_order, self.parts) if a is not b)
         self.after_change(moving)
         message = f"Autonest: {plural(len(moving) - len(unplaced), 'figure')} packed"
+        in_holes = sum(1 for move in moves if move.host is not None)
+        if in_holes:
+            message += f", {in_holes} in holes"
+        if reordered:
+            message += "; the cutting order now cuts what lies inside a contour first"
         if unplaced:
             message += f", {len(unplaced)} did not fit and lie beside the sheet"
         self.statusBar().showMessage(message + ".", 10000)

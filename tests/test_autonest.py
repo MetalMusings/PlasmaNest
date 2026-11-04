@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from plasmanest.autonest import (EPS, SIMPLIFY_TOLERANCE, Footprint, Obstruction, autonest, convex_hull,
+from plasmanest.autonest import (EPS, SIMPLIFY_TOLERANCE, Footprint, Obstruction, autonest, convex_hull, find_holes,
                                  figure_points, group_figures, grow_hull, simplify_hull)
 from plasmanest.gcode import load_program
 from plasmanest.nest import Placement, Sheet, _segments_distance
@@ -223,3 +223,86 @@ def test_obstruction_matches_the_blocked_interval():
                     abs(expected[1] - expected[0]) < 1e-3 or got is None
             else:
                 assert got == pytest.approx(expected, abs=1e-6)
+
+
+# A 300 x 200 part with a hole of 160 mm, whose lead-in runs in from the hole's centre.
+HOLED_PART = """G21
+G90
+G0 X150 Y100
+M3 $0 S1
+G1 X230 Y100
+G3 X230 Y100 I-80 J0
+M5 $0
+G0 X-5 Y-5
+M3 $0 S1
+G1 X0 Y0
+G1 X300 Y0
+G1 X300 Y200
+G1 X0 Y200
+G1 X0 Y0
+M5 $0
+M2
+"""
+
+
+def holed_part(x=150, y=100):
+    from plasmanest.gcode import Program
+    return Placement(Program("holed.ngc", HOLED_PART), x, y)
+
+
+def test_find_holes_in_the_samples():
+    flange = Placement(load_program(os.path.join(SAMPLES, "flange.ngc")), 0, 0)
+    washer = Placement(load_program(os.path.join(SAMPLES, "washer.ngc")), 500, 0)
+    holes = find_holes([flange, washer], gap=5)
+    assert sorted(h.host for h in holes) == [0, 0, 1]
+    for hole in holes:
+        assert hole.slack < 0.01
+    big = find_holes([holed_part()], gap=5)
+    assert len(big) == 1
+    assert len(big[0].inner) == 1  # the lead-in from the centre
+
+
+def test_a_non_convex_hole_is_not_used():
+    part = Placement(Rectangle(0, 0, 300, 300).program(), 150, 150)
+    notch = Placement(Polygon(((50, 50), (250, 50), (250, 100), (100, 100), (100, 250), (50, 250)),
+                              closed=True, inside=True).program(), 0, 0)
+    notch.x, notch.y = notch.program.center  # where it was drawn
+    assert find_holes([part, notch], gap=5) == []
+
+
+def test_small_figures_go_into_a_hole_and_keep_the_gap_to_its_lead_in():
+    sheet = Sheet.rectangle(1000, 600)
+    host = holed_part(160, 110)
+    small = [rectangle(40, 40, 2000 + 100 * i, 2000) for i in range(2)]
+    moves, unplaced = autonest(sheet, small, [host], gap=8, margin=10, turn=False)
+    apply(moves)
+    assert not unplaced
+    hole_box = (160 - 80, 110 - 80, 160 + 80, 110 + 80)
+    for move in moves:
+        assert move.host is host
+        x0, y0, x1, y1 = move.placement.bounds()
+        assert hole_box[0] < x0 and x1 < hole_box[2] and hole_box[1] < y0 and y1 < hole_box[3]
+    for figure in small:
+        assert distance(figure, host) >= 8 - 1e-6
+    assert distance(small[0], small[1]) >= 8 - 1e-6
+
+
+def test_figures_go_into_holes_of_figures_placed_before_them():
+    sheet = Sheet.rectangle(1000, 600)
+    host = holed_part(2000, 2000)
+    small = rectangle(50, 50, 3000, 3000)
+    moves, _ = autonest(sheet, [small, host], gap=8, margin=10, turn=False)
+    apply(moves)
+    assert {m.placement.program.name: m.host for m in moves}["holed.ngc"] is None
+    assert [m.host for m in moves if m.placement is small] == [host]
+    check_nest(sheet, [small, host], [], 8, 10)
+
+
+def test_a_figure_too_large_for_the_hole_goes_on_the_sheet():
+    sheet = Sheet.rectangle(1000, 600)
+    host = holed_part(160, 110)
+    large = rectangle(120, 120, 2000, 2000)
+    moves, _ = autonest(sheet, [large], [host], gap=8, margin=10, turn=True)
+    apply(moves)
+    assert moves[0].host is None
+    assert large.bounds()[0] >= host.bounds()[2] + 8 - 1e-6

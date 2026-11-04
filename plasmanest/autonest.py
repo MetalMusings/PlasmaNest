@@ -6,7 +6,11 @@ that two figures keep at least the chosen gap and every figure keeps the margin 
 edge. The hulls are dropped one at a time, largest first, to the lowest free position: the lowest
 y, then the leftmost x. A figure lying wholly inside another's hull, like a hole drawn in a part,
 moves with that figure as a group. Hulls make the result safe but not tight: concave parts, such
-as an L, are not interlocked, and no figure is put inside another's hole.
+as an L, are not interlocked.
+
+Holes are used first: a figure that fits in a convex hole of a placed figure, keeping the gap to
+the hole's edge and to its lead-in, goes there instead of onto free sheet. Its Move names the
+figure with the hole, which must be cut after it: once the hole is cut, its slug can drop or tip.
 
 No Qt here, so it can be tested on its own.
 """
@@ -15,7 +19,7 @@ import math
 from bisect import bisect_right
 from dataclasses import dataclass
 
-from .nest import Placement, rotation
+from .nest import Placement, Sheet, closed_loops, rotation
 
 SIMPLIFY_TOLERANCE = 0.2  # mm a hull may shrink when simplified; the footprint grows by as much
 ARC_STEP = math.pi / 8    # largest angle of one corner segment when a hull is grown
@@ -115,6 +119,7 @@ class Footprint:
             self.lower = self._chain(polygon, min)
             self.upper = self._chain(polygon, max)
         self._key = None
+        self.owner = None  # the group of figures it belongs to
 
     @property
     def area(self):
@@ -264,11 +269,101 @@ def group_figures(placements):
 
 @dataclass
 class Move:
-    """Where autonest puts a figure."""
+    """Where autonest puts a figure. host is the figure whose hole it was put in, or None."""
     placement: Placement
     x: float
     y: float
     angle: float
+    host: Placement = None
+
+
+def _inside_polygon(point, polygon):
+    x, y = point
+    inside = False
+    for (ax, ay), (bx, by) in zip(polygon, polygon[1:] + polygon[:1]):
+        if (ay > y) != (by > y) and x < ax + (y - ay) * (bx - ax) / (by - ay):
+            inside = not inside
+    return inside
+
+
+def _box(points):
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+class Hole:
+    """Free space in a hole of placed figures.
+
+    region is a convex polygon inside the hole's cut path. A figure in it keeps the gap plus slack
+    from that polygon's edge: slack is how far the path dips inside its own convex hull. inner holds
+    whatever else is cut inside the hole, such as its lead-in, grown by half the gap. host is the
+    index of the figure the hole belongs to, and owner the group whose hulls cover the hole."""
+
+    def __init__(self, region, slack, inner, host, owner):
+        self.region = region
+        self.slack = slack
+        self.inner = inner
+        self.host = host
+        self.owner = owner
+        self.box = _box(region)
+        self.container = _Sheet(Sheet(region))
+        self.floors = {}
+
+
+def find_holes(placements, gap, owner=None):
+    """The convex holes in the placements, taken together, that other figures can go into.
+
+    A closed loop of the cut path is a hole if an odd number of other loops lie around it. Holes
+    whose path is not convex, within 1 mm, are left out."""
+    loops, pieces = [], []  # loops: (points, figure index); pieces: every cut piece, loops included
+    for index, placement in enumerate(placements):
+        for path in placement.program.paths:
+            if path.kind != "cut":
+                continue
+            points = [placement.map_point(p) for p in path.points]
+            previous = 0
+            for start, end in closed_loops(path.points):
+                if math.hypot(points[start][0] - points[end][0], points[start][1] - points[end][1]) > 1e-3:
+                    continue  # closed_loops calls a path without a loop one; it is no hole
+                loop = points[start:end]
+                loops.append((loop, index))
+                pieces.append(loop)
+                if start > previous:
+                    pieces.append(points[previous:start + 1])
+                previous = end
+            if previous < len(points) - 1 or len(points) == 1:
+                pieces.append(points[previous:])
+    boxes = [_box(loop) for loop, _ in loops]
+    holes = []
+    for i, (loop, host) in enumerate(loops):
+        if len(loop) < 3:
+            continue
+        x0, y0, x1, y1 = boxes[i]
+        depth = sum(1 for j, (other, _) in enumerate(loops)
+                    if j != i and boxes[j][0] <= x0 and boxes[j][1] <= y0 and boxes[j][2] >= x1
+                    and boxes[j][3] >= y1 and _inside_polygon(loop[0], other))
+        if depth % 2 == 0:
+            continue
+        hull = convex_hull(loop)
+        if len(hull) < 3:
+            continue
+        edges = list(zip(hull, hull[1:] + hull[:1]))
+        slack = max(min(_line_distance(p, a, b) for a, b in edges) for p in loop)
+        if slack > 1.0:
+            continue
+        region = simplify_hull(hull)
+        footprint = Footprint(region)
+        inner = []
+        for piece in pieces:
+            if piece is loop:
+                continue
+            px0, py0, px1, py1 = _box(piece)
+            if px1 < x0 or px0 > x1 or py1 < y0 or py0 > y1:
+                continue
+            if any(footprint.contains_point(p) for p in piece):
+                inner.append(Footprint(grow_hull(convex_hull(piece), gap / 2)))
+        holes.append(Hole(region, slack, inner, host, owner))
+    return holes
 
 
 class _Group:
@@ -286,13 +381,13 @@ class _Group:
         return [(c * (x - self.pivot[0]) - s * (y - self.pivot[1]),
                  s * (x - self.pivot[0]) + c * (y - self.pivot[1])) for x, y in self.hull]
 
-    def moves(self, degrees, dx, dy):
+    def moves(self, degrees, dx, dy, host=None):
         c, s = rotation(degrees)
         result = []
         for placement in self.placements:
             px, py = placement.x - self.pivot[0], placement.y - self.pivot[1]
             result.append(Move(placement, c * px - s * py + dx, s * px + c * py + dy,
-                               math.fmod(placement.angle + degrees, 360.0) % 360.0))
+                               math.fmod(placement.angle + degrees, 360.0) % 360.0, host))
         return result
 
 
@@ -395,33 +490,78 @@ def autonest(sheet, moving, fixed=(), gap=10.0, margin=10.0, turn=True):
     groups.sort(key=lambda g: -g.area)
     body_grow = gap / 2 + SIMPLIFY_TOLERANCE
     edge_grow = margin + SIMPLIFY_TOLERANCE
-    obstacles = []
-    for placement in fixed:
-        hull = convex_hull(figure_points(placement))
-        obstacles.append(Footprint(grow_hull(hull, gap / 2)))
+    fixed = list(fixed)
+    obstacles, holes = [], []
+    for owner, indexes in enumerate(group_figures(fixed)):
+        members = [fixed[i] for i in indexes]
+        for placement in members:
+            footprint = Footprint(grow_hull(convex_hull(figure_points(placement)), gap / 2))
+            footprint.owner = owner
+            obstacles.append(footprint)
+        for hole in find_holes(members, gap, owner):
+            hole.host = members[hole.host]
+            holes.append(hole)
+    # Only holes on the sheet: a figure to cut may wait beside it.
+    holes = [h for h in holes if all(sheet.contains_segment(a, b)
+                                     for a, b in zip(h.region, h.region[1:] + h.region[:1]))]
     target = _Sheet(sheet)
     angles = (0.0, 90.0, 180.0, 270.0) if turn else (0.0,)
     moves, unplaced = [], []
     exact, floors = {}, {}
-    for group in groups:
+    for number, group in enumerate(groups):
+        owner = ("moved", number)
+        turned = {degrees: simplify_hull(group.turned(degrees)) for degrees in angles}
+        bodies = {degrees: Footprint(grow_hull(hull, body_grow)) for degrees, hull in turned.items()}
+        sizes = {degrees: (box[2] - box[0], box[3] - box[1])
+                 for degrees, box in ((d, _box(hull)) for d, hull in turned.items())}
         best = None
-        for degrees in angles:
-            hull = simplify_hull(group.turned(degrees))
-            body = Footprint(grow_hull(hull, body_grow))
-            edge = Footprint(grow_hull(hull, edge_grow))
-            found = _lowest(body, edge, target, obstacles, None if best is None else best[0], exact, floors)
-            if found is None:
+        # A hole costs no sheet, so any hole that takes the figure beats the free sheet.
+        for hole in holes:
+            hx0, hy0, hx1, hy1 = hole.box
+            # Most holes are far too small: try the box first.
+            fitting = [degrees for degrees in angles
+                       if sizes[degrees][0] + 2 * gap <= hx1 - hx0 and sizes[degrees][1] + 2 * gap <= hy1 - hy0]
+            if not fitting:
                 continue
-            top = found[1] + edge.maxy
-            # A turn has to gain something; on a tie the figure keeps its angle.
-            if best is None or top < best[0] - TIE or (abs(top - best[0]) <= TIE and found[0] < best[2] - TIE):
-                best = (top, degrees, found[0], found[1], body)
+            in_hole = [o for o in obstacles if o.owner != hole.owner and o.maxx > hx0 and o.minx < hx1
+                       and o.maxy > hy0 and o.miny < hy1] + hole.inner
+            for degrees in fitting:
+                hull = turned[degrees]
+                body = bodies[degrees]
+                edge = Footprint(grow_hull(hull, gap + SIMPLIFY_TOLERANCE + hole.slack))
+                found = _lowest(body, edge, hole.container, in_hole, None if best is None else best[0],
+                                exact, hole.floors)
+                if found is None:
+                    continue
+                top = found[1] + edge.maxy
+                if best is None or top < best[0] - TIE or (abs(top - best[0]) <= TIE and found[0] < best[2] - TIE):
+                    best = (top, degrees, found[0], found[1], body, hole)
+        if best is None:
+            for degrees in angles:
+                hull = turned[degrees]
+                body = bodies[degrees]
+                edge = Footprint(grow_hull(hull, edge_grow))
+                found = _lowest(body, edge, target, obstacles, None if best is None else best[0], exact, floors)
+                if found is None:
+                    continue
+                top = found[1] + edge.maxy
+                # A turn has to gain something; on a tie the figure keeps its angle.
+                if best is None or top < best[0] - TIE or (abs(top - best[0]) <= TIE and found[0] < best[2] - TIE):
+                    best = (top, degrees, found[0], found[1], body, None)
         if best is None:
             unplaced.append(group)
             continue
-        _, degrees, x, y, body = best
-        obstacles.append(body.moved(x, y))
-        moves += group.moves(degrees, x, y)
+        _, degrees, x, y, body, hole = best
+        footprint = body.moved(x, y)
+        footprint.owner = owner
+        obstacles.append(footprint)
+        placed = group.moves(degrees, x, y, None if hole is None else hole.host)
+        moves += placed
+        # Its own holes can take smaller figures in turn.
+        copies = [Placement(m.placement.program, m.x, m.y, m.angle) for m in placed]
+        for new in find_holes(copies, gap, owner):
+            new.host = placed[new.host].placement
+            holes.append(new)
     # Beside the sheet, in a column from its bottom edge upwards, in their own orientation.
     right = max([target.x1] + [o.maxx for o in obstacles]) + 5 * max(gap, 10.0)
     y = target.y0

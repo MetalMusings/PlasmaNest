@@ -53,6 +53,84 @@ class Placement:
         return min(xs), min(ys), max(xs), max(ys)
 
 
+def closed_loops(points, tolerance=1e-3):
+    """(start, end) indexes of the closed contours in a cut path, without the lead-in before or
+    the lead-out after them. A loop ends where the path comes back to a point it passed since the
+    last loop. A path with no loop counts as one, closed from its last point to its first."""
+    loops, seen = [], {}
+    for index, (x, y) in enumerate(points):
+        key = (round(x / tolerance), round(y / tolerance))
+        start = seen.get(key)
+        if start is not None and index - start >= 3:
+            loops.append((start, index))
+            seen = {}
+        seen.setdefault(key, index)
+    return loops or ([(0, len(points) - 1)] if len(points) >= 3 else [])
+
+
+
+def _point_in_loop(point, loop):
+    x, y = point
+    inside = False
+    for (ax, ay), (bx, by) in zip(loop, loop[1:] + loop[:1]):
+        if (ay > y) != (by > y) and x < ax + (y - ay) * (bx - ax) / (by - ay):
+            inside = not inside
+    return inside
+
+
+def inside_first(placements):
+    """The placements in a cutting order where a figure lying wholly inside a closed contour of
+    another figure, like a part in a hole or a hole in a part, is cut before that figure, while
+    the sheet round it is still attached. Otherwise the order stays as it was."""
+    count = len(placements)
+    points, boxes, loops = [], [], []
+    for placement in placements:
+        figure, closed = [], []
+        for path in placement.program.paths:
+            if path.kind != "cut":
+                continue
+            mapped = [placement.map_point(p) for p in path.points]
+            figure += mapped
+            for start, end in closed_loops(path.points):
+                if math.hypot(mapped[start][0] - mapped[end][0], mapped[start][1] - mapped[end][1]) <= 1e-3:
+                    loop = mapped[start:end]
+                    xs, ys = [p[0] for p in loop], [p[1] for p in loop]
+                    closed.append((loop, (min(xs), min(ys), max(xs), max(ys))))
+        points.append(figure)
+        xs, ys = [p[0] for p in figure] or [0.0], [p[1] for p in figure] or [0.0]
+        boxes.append((min(xs), min(ys), max(xs), max(ys)))
+        loops.append(closed)
+
+    def inside(a, b):
+        x0, y0, x1, y1 = boxes[a]
+        return bool(points[a]) and any(
+            box[0] < x0 and box[1] < y0 and x1 < box[2] and y1 < box[3]
+            and all(_point_in_loop(p, loop) for p in points[a]) for loop, box in loops[b])
+
+    before = [set() for _ in range(count)]  # before[b]: the figures to cut before b
+    for a in range(count):
+        for b in range(count):
+            if a != b and inside(a, b):
+                before[b].add(a)
+    # Each figure in the old order, with what lies inside it pulled forward to just before it.
+    # visiting breaks a cycle, as with two figures on top of each other.
+    order, done, visiting = [], set(), set()
+
+    def emit(i):
+        if i in done or i in visiting:
+            return
+        visiting.add(i)
+        for inner in sorted(before[i]):
+            emit(inner)
+        visiting.discard(i)
+        done.add(i)
+        order.append(i)
+
+    for i in range(count):
+        emit(i)
+    return [placements[i] for i in order]
+
+
 def _orientation(a, b, c):
     value = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
     return 0 if abs(value) < 1e-9 else (1 if value > 0 else -1)

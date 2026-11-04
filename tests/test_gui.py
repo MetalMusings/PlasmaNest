@@ -1606,3 +1606,22 @@ def test_autonest_packs_figures_against_the_bottom_edge(window):
     window.undo()
     assert [(p.placement.x, p.placement.y, p.placement.angle) for p in window.parts] == \
         [pytest.approx(s) for s in moved_state]
+
+
+def test_autonest_puts_a_figure_in_a_drawn_hole_and_cuts_it_first(window):
+    from plasmanest.shapes import Circle, Rectangle
+    window.set_sheet(Sheet.rectangle(693, 800))
+    part = window.add_shape(Rectangle(800, 0, 300, 200, leadin=4).program())
+    hole = window.add_shape(Circle(950, 100, 160, inside=True, leadin=5).program())
+    small = window.add_shape(Rectangle(1200, 300, 90, 90, leadin=4).program())
+    window.scene_.clearSelection()
+    moves, unplaced = window.autonest_parts(gap=8, margin=10, turn=True)
+    window.refresh()
+    assert not unplaced
+    assert [m.host for m in moves if m.placement is small.placement] == [hole.placement]
+    assert window.overlap_count == 0 and window.outside_count == 0
+    assert window.parts == [small, hole, part]  # inside first, while the sheet round it holds
+    assert not window.live_problems()
+    window.undo()
+    assert [p.placement.program for p in window.parts] == [part.placement.program, hole.placement.program,
+                                                           small.placement.program]

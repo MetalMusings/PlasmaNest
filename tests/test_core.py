@@ -739,3 +739,23 @@ def test_work_area_from_the_expanded_ini_file(tmp_path):
     ini.write_text("[EMC]\nMACHINE = x\n#INCLUDE limits.inc\n", encoding="utf-8")  # not expanded
     assert work_area(str(ini)) is None
     assert work_area(str(tmp_path / "missing.ini")) is None
+
+
+def test_inside_first_cuts_what_lies_inside_a_contour_first():
+    from plasmanest.nest import inside_first
+    from plasmanest.shapes import Circle, Rectangle
+    part = Rectangle(0, 0, 300, 200, leadin=4).program()
+    hole = Circle(150, 100, 160, inside=True, leadin=5).program()
+    small = Rectangle(110, 60, 60, 60, leadin=3).program()
+    other = Rectangle(400, 0, 50, 50).program()
+    r, h, s, o = (Placement(p, *p.center) for p in (part, hole, small, other))
+    assert inside_first([r, o, h, s]) == [s, h, r, o]
+    assert inside_first([s, h, r, o]) == [s, h, r, o]
+    assert inside_first([o, s, r, h]) == [o, s, h, r]
+    # A loaded figure in the hole of another loaded figure, and two figures on top of each other.
+    flange = load_program(os.path.join(SAMPLES, "flange.ngc"))
+    a, b = Placement(flange, 0, 0), Placement(flange, 0, 0)
+    assert sorted(map(id, inside_first([a, b]))) == sorted(map(id, [a, b]))
+    tiny = Placement(Circle(0, 0, 4).program(), 25, 30)  # in the flange's left hole
+    near = Placement(flange, 50, 30)
+    assert inside_first([near, tiny]) == [tiny, near]
