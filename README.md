@@ -1,6 +1,6 @@
 # PlasmaNest
 
-[![tests](https://github.com/MetalMusings/plasmanest/actions/workflows/tests.yml/badge.svg)](https://github.com/MetalMusings/plasmanest/actions/workflows/tests.yml)
+[![tests](https://github.com/MetalMusings/PlasmaNest/actions/workflows/tests.yml/badge.svg)](https://github.com/MetalMusings/PlasmaNest/actions/workflows/tests.yml)
 
 Manual nesting of G-code for [LinuxCNC](https://linuxcnc.org) /
 [QtPlasmaC](https://linuxcnc.org/docs/2.9/html/plasma/qtplasmac.html). Load G-code files, draw your
@@ -44,7 +44,7 @@ A standard LinuxCNC 2.9 installation with QtPlasmaC already has everything Plasm
 ### 1. Get PlasmaNest
 
 ```bash
-git clone https://github.com/MetalMusings/plasmanest.git ~/plasmanest
+git clone https://github.com/MetalMusings/PlasmaNest.git ~/plasmanest
 ```
 
 Any other directory works too; change `~/plasmanest` below to match.
