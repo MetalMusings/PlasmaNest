@@ -136,6 +136,24 @@ def test_copy_delete_and_undo(window):
     assert window.parts == []
 
 
+def test_delete_the_whole_g_code_without_a_selection_deletes_every_figure(window):
+    assert not window.delete_all_button.isEnabled()  # nothing to delete
+    window.load_paths([FLANGE, WASHER])
+    window.scene_.clearSelection()
+    assert window.delete_all_button.isEnabled() and not window.delete_button.isEnabled()
+    window.delete_all_button.click()
+    assert window.parts == [] and not window.delete_all_button.isEnabled()
+    window.undo()
+    assert len(window.parts) == 2 and window.delete_all_button.isEnabled()
+    # With a selection, only the copies of its files go.
+    window.copy_parts([window.parts[0]], 2)
+    window.scene_.clearSelection()
+    window.parts[1].setSelected(True)
+    window.delete_all_button.click()
+    assert len(window.parts) == 3 and all(p.placement.program is window.parts[0].placement.program
+                                          for p in window.parts)
+
+
 def test_part_in_hole_is_allowed_but_real_overlap_is_flagged(window):
     big = "G21\nG0 X10 Y10\nM3 $0 S1\nG1 X110 Y10\nG1 X110 Y110\nG1 X10 Y110\nG1 X10 Y10\nM5 $0\n" \
           "G0 X30 Y30\nM3 $0 S1\nG1 X90 Y30\nG1 X90 Y90\nG1 X30 Y90\nG1 X30 Y30\nM5 $0\nM2\n"

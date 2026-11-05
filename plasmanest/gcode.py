@@ -251,6 +251,13 @@ def _word_text(letter, value):
     return f"{letter}{value}"
 
 
+def _lines_text(numbers):
+    if len(numbers) == 1:
+        return f"Line {numbers[0]}"
+    shown = ", ".join(str(n) for n in numbers[:5])
+    return f"Lines {shown}" + (f" and {len(numbers) - 5} more" if len(numbers) > 5 else "")
+
+
 def flatten_arc(start, center_offset, end, mode):
     """Return the points of an arc after the start point, for preview and bounds."""
     cx, cy = start[0] + center_offset[0], start[1] + center_offset[1]
@@ -317,6 +324,7 @@ class Program:
         self.pos = (0.0, 0.0)
         self.torch = False
         self.params = {}
+        self.move_lines = {}  # id of each move: its line number, for warnings
         self.seen_first_move = False
         for number, raw in enumerate(self.text.splitlines(), 1):
             self._parse_line(raw.strip(), number)
@@ -553,8 +561,9 @@ class Program:
         motion_words = {("G", w[1]) for w in kept if w[0] == "G" and self._number_or_none(w[1]) in (0, 1, 2, 3)}
         extras = [self._scaled_extra(w, kept) for w in kept
                   if (w[0], w[1]) not in motion_words and not (w[0] == "P" and mode in (2, 3))]
-        self.ops.append(Op("move", move=Move(mode, start, end, center, self.dist_incremental,
-                                             self.torch, extras, " ".join(comments))))
+        move = Move(mode, start, end, center, self.dist_incremental, self.torch, extras, " ".join(comments))
+        self.ops.append(Op("move", move=move))
+        self.move_lines[id(move)] = number
         self.pos = end
         self.seen_first_move = True
 
@@ -570,10 +579,40 @@ class Program:
                                  "the machine will not light the torch.")
         if not any(m.cut for m in moves):
             raise GCodeError("The file has no cutting moves.")
+        if has_torch:
+            self._warn_about_torch(moves)
         # Parking moves after the final cut belong to the file, not to the part.
         last_cut = max(i for i, op in enumerate(self.ops) if op.kind == "move" and op.move.cut)
         self.ops = [op for i, op in enumerate(self.ops) if not (op.kind == "move" and i > last_cut)]
         self.ends_with_torch_on = self.torch
+
+    def _warn_about_torch(self, moves):
+        """Warn, but read the file anyway, about two mistakes CAM posts make: a rapid with the
+        torch lit, and a whole contour cut with the torch off."""
+        lines = self.move_lines
+        rapids = [lines[id(m)] for m in moves if m.torch and m.mode == 0 and m.start != m.end]
+        if rapids:
+            self.warnings.append(f"{_lines_text(rapids)}: rapid move (G0) with the torch on, between M3 and M5. "
+                                 "The torch stays lit while it moves.")
+        # Runs of G1/G2/G3 with the torch off that close on themselves.
+        run = []
+        for m in moves + [None]:
+            if m is not None and not m.torch and m.mode != 0 and not m.incremental:
+                if run and run[-1].end != m.start:
+                    run = []
+                run.append(m)
+                continue
+            for i, first in enumerate(run):
+                last = next((j for j in range(len(run) - 1, i - 1, -1)
+                             if math.hypot(run[j].end[0] - first.start[0], run[j].end[1] - first.start[1]) <= 1e-3
+                             and (j > i + 1 or run[j].center is not None)), None)
+                if last is not None:
+                    self.warnings.append(
+                        f"Lines {lines[id(first)]}-{lines[id(run[last])]}: a closed contour of G1/G2/G3 with the "
+                        "torch off, without M3 before it. It will not be cut. Fusion 360 writes this when the "
+                        "lead-in is disabled.")
+                    break
+            run = []
 
     def _build_paths(self):
         current = None

@@ -20,6 +20,7 @@ from bisect import bisect_right
 from dataclasses import dataclass
 
 from .nest import Placement, Sheet, closed_loops, rotation
+from .reverse import can_reverse
 
 SIMPLIFY_TOLERANCE = 0.2  # mm a hull may shrink when simplified; the footprint grows by as much
 ARC_STEP = math.pi / 8    # largest angle of one corner segment when a hull is grown
@@ -234,7 +235,7 @@ class Obstruction:
 
 def figure_points(placement):
     """Every cut point of a figure, on the sheet."""
-    return [placement.map_point(p) for path in placement.program.paths
+    return [placement.map_point(p) for path in placement.cut_program.paths
             if path.kind == "cut" for p in path.points]
 
 
@@ -319,7 +320,7 @@ def find_holes(placements, gap, owner=None):
     whose path is not convex, within 1 mm, are left out."""
     loops, pieces = [], []  # loops: (points, figure index); pieces: every cut piece, loops included
     for index, placement in enumerate(placements):
-        for path in placement.program.paths:
+        for path in placement.cut_program.paths:
             if path.kind != "cut":
                 continue
             points = [placement.map_point(p) for p in path.points]
@@ -376,16 +377,28 @@ class _Group:
         xs, ys = [p[0] for p in self.hull], [p[1] for p in self.hull]
         self.pivot = ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
         self.area = Footprint(self.hull).area if len(self.hull) >= 3 else 0.0
+        self._flipped = None
+
+    def flipped_hull(self):
+        """The hull of the group mirrored left to right about its pivot, as moves(flip=True) puts
+        it: a mirrored figure's lead-ins are reflected to keep the cut direction, so it is not
+        just the mirror image of the hull."""
+        if self._flipped is None:
+            points = []
+            for placement in self.placements:
+                flipped = Placement(placement.program, 2 * self.pivot[0] - placement.x, placement.y,
+                                    -placement.angle, mirror=not placement.mirror)
+                points += figure_points(flipped)
+            self._flipped = convex_hull(points)
+        return self._flipped
 
     def turned(self, degrees, flip=False):
         """The hull turned by degrees about the pivot, with the pivot at the origin. flip first
-        mirrors it left to right about the pivot."""
+        mirrors the group left to right about the pivot."""
         c, s = rotation(degrees)
-        sign = -1.0 if flip else 1.0
-        points = [(c * sign * (x - self.pivot[0]) - s * (y - self.pivot[1]),
-                   s * sign * (x - self.pivot[0]) + c * (y - self.pivot[1])) for x, y in self.hull]
-        # A mirror image runs clockwise: make it an anticlockwise hull again.
-        return convex_hull(points) if flip else points
+        hull = self.flipped_hull() if flip else self.hull
+        return [(c * (x - self.pivot[0]) - s * (y - self.pivot[1]),
+                 s * (x - self.pivot[0]) + c * (y - self.pivot[1])) for x, y in hull]
 
     def moves(self, degrees, dx, dy, host=None, flip=False):
         """flip mirrors the group left to right about its pivot before it is turned: each
@@ -526,7 +539,9 @@ def autonest(sheet, moving, fixed=(), gap=10.0, margin=10.0, turn=True, mirror=F
         owner = ("moved", number)
         # As it is first, so that on a tie it keeps its orientation.
         orientations = [(degrees, False) for degrees in angles]
-        if mirror and group.hull and all(can_mirror is None or can_mirror(p) for p in group.placements):
+        # Only figures whose cut direction can be turned back round once mirrored.
+        if mirror and group.hull and all((can_mirror is None or can_mirror(p)) and can_reverse(p.program)
+                                         for p in group.placements):
             orientations += [(degrees, True) for degrees in angles]
         turned = {o: simplify_hull(group.turned(*o)) for o in orientations}
         bodies = {o: Footprint(grow_hull(hull, body_grow)) for o, hull in turned.items()}

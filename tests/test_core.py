@@ -759,3 +759,56 @@ def test_inside_first_cuts_what_lies_inside_a_contour_first():
     tiny = Placement(Circle(0, 0, 4).program(), 25, 30)  # in the flange's left hole
     near = Placement(flange, 50, 30)
     assert inside_first([near, tiny]) == [tiny, near]
+
+
+# Shortened from Fusion 360 posts that went wrong: with the lead-in disabled, the outer contour
+# came without M3 (FUSION_NO_M3), and another setting lit the torch before a rapid (FUSION_RAPID).
+FUSION_NO_M3 = """G21
+G90 G40
+G0 X19.92897 Y-32.10773
+M3 $0 S1
+G3 X19.92904 Y-43.00626 I0.00003 J-5.44926
+G3 X19.92904 Y-43.00626 I-0.00006 J10.89853
+M5
+G0 X0 Y0
+G1 X40 Y0
+G2 X40 Y-60 I0 J-30
+G1 X0 Y-60
+G1 X0 Y0
+M5
+M30
+"""
+
+FUSION_RAPID = """G21
+G90 G40
+G0 X19.92904 Y-43.00626
+M3 $0 S1
+G0 X19.92897 Y-32.10773
+M3 $0 S1
+G3 X19.92904 Y-43.00626 I0.00003 J-5.44926
+G3 X19.92904 Y-43.00626 I-0.00006 J10.89853
+M5
+M30
+"""
+
+
+def test_a_contour_without_m3_is_warned_about_but_read():
+    program = Program("fusion", FUSION_NO_M3)
+    warning, = program.warnings
+    assert warning.startswith("Lines 9-12: a closed contour of G1/G2/G3 with the torch off")
+    assert "will not be cut" in warning
+
+
+def test_a_rapid_with_the_torch_on_is_warned_about_but_read():
+    program = Program("fusion", FUSION_RAPID)
+    warning, = program.warnings
+    assert warning.startswith("Line 5: rapid move (G0) with the torch on")
+    assert any(path.kind == "cut" for path in program.paths)
+
+
+def test_ordinary_files_give_no_torch_warnings():
+    samples = os.path.join(os.path.dirname(__file__), "..", "samples")
+    for name in ("flange.ngc", "washer.ngc"):
+        assert load_program(os.path.join(samples, name)).warnings == []
+    # A feed move with the torch off that does not close is no contour.
+    assert Program("feed", FUSION_RAPID.replace("M3 $0 S1\nG0 X19.92897", "G1 X19.92897")).warnings == []

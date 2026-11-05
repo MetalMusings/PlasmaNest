@@ -26,6 +26,7 @@ from .gcode import GCodeError, Program, format_number, load_program
 from .nest import (Placement, Sheet, closed_loops, export_gcode, inside_first, load_project, material_warning,
                    rotation, save_project)
 from .materials import available_materials, machine_work_area
+from .reverse import reversed_program
 from .theme import qtplasmac_colors, stylesheet
 from .shapes import (OVERCUT, SMALL_HOLE, SMALL_HOLE_SPEED, Circle, HoleCircle, Polygon, Rectangle, Slot,
                      shape_of)
@@ -250,8 +251,32 @@ class PartItem(QGraphicsItem):
                              self.drawn_shape.cy - placement.program.center[1])
             self.guide_path.addEllipse(centre, self.drawn_shape.diameter / 2, self.drawn_shape.diameter / 2)
         program = placement.program
+        self._build_paths()
+
+        self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable
+                      | QGraphicsItem.ItemSendsGeometryChanges | QGraphicsItem.ItemIsFocusable)
+        self.setCursor(Qt.SizeAllCursor)
+        self.setToolTip(program.name)
+
+        self.handle = RotateHandle(self)
+        self.handle.setPos(0, self.rect.bottom())
+        self.handle.setVisible(False)
+
+        self.label = QGraphicsSimpleTextItem(self)
+        self.label.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+        self.label.setAcceptedMouseButtons(Qt.NoButton)
+        self.label.setBrush(QBrush(COLOR_TEXT))
+
+        self.setPos(placement.x, placement.y)
+        self.setRotation(placement.angle)
+        self.set_mirror(placement.mirror)
+
+    def _build_paths(self):
+        """The paths as the program is cut: mirrored, its lead-ins are reflected to keep the cut
+        direction, and a cut may pierce elsewhere."""
+        program = self.placement.cut_program
         drawn = self.drawn_shape
-        cx, cy = program.center
+        cx, cy = self.placement.program.center
         self.cut_path = QPainterPath()
         self.fill_path = QPainterPath()  # the closed contours: the material, without lead-ins
         self.fill_path.setFillRule(Qt.OddEvenFill)
@@ -273,24 +298,6 @@ class PartItem(QGraphicsItem):
         self.hit_shape = QPainterPath(self.fill_path)
         self.hit_shape.addPath(self.stroke_path)
 
-        self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemIsSelectable
-                      | QGraphicsItem.ItemSendsGeometryChanges | QGraphicsItem.ItemIsFocusable)
-        self.setCursor(Qt.SizeAllCursor)
-        self.setToolTip(program.name)
-
-        self.handle = RotateHandle(self)
-        self.handle.setPos(0, self.rect.bottom())
-        self.handle.setVisible(False)
-
-        self.label = QGraphicsSimpleTextItem(self)
-        self.label.setFlag(QGraphicsItem.ItemIgnoresTransformations)
-        self.label.setAcceptedMouseButtons(Qt.NoButton)
-        self.label.setBrush(QBrush(COLOR_TEXT))
-
-        self.setPos(placement.x, placement.y)
-        self.setRotation(placement.angle)
-        self.set_mirror(placement.mirror)
-
     def set_number(self, number):
         self.label.setText(str(number))
         # The label is not mirrored, but where it is put is.
@@ -303,7 +310,13 @@ class PartItem(QGraphicsItem):
         self._mirror_transform()
 
     def set_mirror(self, mirror):
-        self.placement.mirror = bool(mirror)
+        if bool(mirror) != self.placement.mirror:
+            self.prepareGeometryChange()
+            self.placement.mirror = bool(mirror)
+            self._build_paths()
+            self.handle.setPos(0, self.rect.bottom())
+            self.on_sheet_cache = (None, True)
+            self.update()
         self._mirror_transform()
         if self.label.text():
             self.set_number(int(self.label.text()))
@@ -1102,8 +1115,10 @@ class AutonestDialog(QDialog):
         form.addRow(self.turn)
         self.mirror = QCheckBox("Also try loaded G-code mirrored")
         self.mirror.setToolTip("Each loaded figure is also tried mirrored, at every angle, and kept mirrored "
-                               "if that packs it lower. A mirrored figure is cut the other way round. "
-                               "Figures drawn in PlasmaNest are never mirrored.")
+                               "if that packs it lower. Its contours are cut the other way round, so that "
+                               "they keep their cut direction, with lead-ins and lead-outs reflected to match. "
+                               "Figures where that cannot be done safely, and figures drawn in PlasmaNest, are "
+                               "never mirrored.")
         self.mirror.setChecked(settings.get("mirror", False))
         form.addRow(self.mirror)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -1543,7 +1558,6 @@ class MainWindow(QMainWindow):
         self.sheet_info = QLabel()
         self.sheet_info.setWordWrap(True)
         sheet_form.addRow(self.sheet_info)
-        layout.addWidget(sheet_box)
         self.update_sheet_panel()
 
         parts_box = QGroupBox("Figures (in cutting order)")
@@ -1585,6 +1599,8 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.delete_button = self._button("Delete", self.delete_selection, row)
         self.delete_all_button = self._button("Delete the whole G-code", self.delete_programs, row)
+        self.delete_all_button.setToolTip("Deletes every copy of the selected figures' G-code, or with nothing "
+                                          "selected every figure. Undo brings them back.")
         parts_layout.addLayout(row)
         row = QHBoxLayout()
         self.up_button = self._button("Cut earlier", lambda: self.reorder(-1), row)
@@ -1618,9 +1634,9 @@ class MainWindow(QMainWindow):
         row.addWidget(self.rotate_step)
         place_form.addRow("Rotate:", row)
         row = QHBoxLayout()
-        self.mirror_x_button = self._button("Left–right", lambda: self.mirror_selection(upside_down=False), row)
+        self.mirror_x_button = self._button("↔", lambda: self.mirror_selection(upside_down=False), row)
         self.mirror_x_button.setToolTip("Mirror the selection left to right.")
-        self.mirror_y_button = self._button("Upside down", lambda: self.mirror_selection(upside_down=True), row)
+        self.mirror_y_button = self._button("↕", lambda: self.mirror_selection(upside_down=True), row)
         self.mirror_y_button.setToolTip("Turn the selection upside down: mirrored top to bottom.")
         place_form.addRow("Mirror:", row)
         self.place_box = place_box
@@ -1706,6 +1722,9 @@ class MainWindow(QMainWindow):
         self.rect_box = rect_box
         layout.addWidget(rect_box)
         self.show_rectangle_fields(None)
+
+        # The sheet is set once per nest: below the figures, above the check boxes.
+        layout.addWidget(sheet_box)
 
         self.show_rapids = QCheckBox("Show rapids (G0)")
         self.show_rapids.setChecked(True)
@@ -1824,7 +1843,9 @@ class MainWindow(QMainWindow):
             self.part_list.item(row).setSelected(part.isSelected())
         self.updating_ui = False
         has_selection = bool(selected)
-        for widget in (self.copy_button, self.delete_button, self.delete_all_button,
+        # Without a selection it deletes every figure, so it only needs figures.
+        self.delete_all_button.setEnabled(bool(self.parts))
+        for widget in (self.copy_button, self.delete_button,
                        self.up_button, self.down_button, self.rotate_ccw, self.rotate_cw,
                        self.mirror_x_button, self.mirror_y_button):
             widget.setEnabled(has_selection)
@@ -2248,7 +2269,7 @@ class MainWindow(QMainWindow):
         if self.show_rapids.isChecked():
             previous = None
             for part in self.cut_parts():
-                ends = [op.move for op in part.placement.program.ops if op.kind == "move"]
+                ends = [op.move for op in part.placement.cut_program.ops if op.kind == "move"]
                 first = part.placement.map_point(ends[0].end)
                 if previous is not None:
                     path.moveTo(*previous)
@@ -2430,7 +2451,8 @@ class MainWindow(QMainWindow):
         # Many different figures can take a few seconds.
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            # Drawn figures keep their cut direction and lead-in, as when mirrored by hand.
+            # Drawn figures keep their cut direction and lead-in, as when mirrored by hand. Autonest
+            # itself leaves out figures whose cut direction cannot be turned back round.
             moves, unplaced = autonest(self.sheet, [p.placement for p in moving], fixed, gap, margin, turn,
                                        mirror, lambda placement: shape_of(placement.program) is None)
         except ValueError as error:
@@ -2473,8 +2495,11 @@ class MainWindow(QMainWindow):
             self.after_change()
 
     def delete_programs(self):
-        programs = {id(p.placement.program) for p in self.selected_parts()}
-        doomed = [p for p in self.parts if id(p.placement.program) in programs]
+        """Delete every copy of the selected figures' G-code, or with nothing selected every figure.
+        Undo brings them back."""
+        selected = self.selected_parts()
+        programs = {id(p.placement.program) for p in selected}
+        doomed = [p for p in self.parts if id(p.placement.program) in programs] if selected else list(self.parts)
         for part in doomed:
             self.remove_part(part)
         if doomed:
@@ -2528,6 +2553,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Figures drawn in PlasmaNest cannot be mirrored. Draw them the way "
                                          "they should be cut instead.", 10000)
             return False
+        # Mirrored, every contour is cut the other way round to keep the cut direction. A figure
+        # where that cannot be done safely is not mirrored.
+        for part in selected:
+            try:
+                reversed_program(part.placement.program)
+            except ValueError as error:
+                self.statusBar().showMessage(f"{part.placement.program.name} cannot be mirrored: {error}.", 30000)
+                return False
         px, py = self.selection_pivot(selected)
         for part in selected:
             placement = part.placement

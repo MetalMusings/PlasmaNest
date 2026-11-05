@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass
 
 from .gcode import Program, format_number, split_comments, tokenize
+from .reverse import reversed_program
 
 PROJECT_VERSION = 2
 MIRROR_PROJECT_VERSION = 3  # version 2 with mirrored figures
@@ -55,9 +56,16 @@ class Placement:
         vx, vy = (-vector[0] if self.mirror else vector[0]), vector[1]
         return (c * vx - s * vy, s * vx + c * vy)
 
+    @property
+    def cut_program(self):
+        """The program as it is cut: mirrored, its contours run the other way round, so that they
+        are cut in the same direction as the original, with lead-ins and lead-outs reflected to
+        match. Its points are mapped like the program's. ValueError if that cannot be done safely."""
+        return reversed_program(self.program) if self.mirror else self.program
+
     def bounds(self):
         """Bounding box of the cut geometry on the sheet."""
-        points = [self.map_point(p) for path in self.program.paths
+        points = [self.map_point(p) for path in self.cut_program.paths
                   if path.kind == "cut" for p in path.points]
         xs, ys = [p[0] for p in points], [p[1] for p in points]
         return min(xs), min(ys), max(xs), max(ys)
@@ -96,7 +104,7 @@ def inside_first(placements):
     points, boxes, loops = [], [], []
     for placement in placements:
         figure, closed = [], []
-        for path in placement.program.paths:
+        for path in placement.cut_program.paths:
             if path.kind != "cut":
                 continue
             mapped = [placement.map_point(p) for p in path.points]
@@ -311,7 +319,7 @@ class Sheet:
             x0, y0, x1, y1 = placement.bounds()
             return (x0 >= self.bounds[0] - GEOMETRY_TOLERANCE and y0 >= self.bounds[1] - GEOMETRY_TOLERANCE
                     and x1 <= self.bounds[2] + GEOMETRY_TOLERANCE and y1 <= self.bounds[3] + GEOMETRY_TOLERANCE)
-        for path in placement.program.paths:
+        for path in placement.cut_program.paths:
             if path.kind != "cut":
                 continue
             points = [placement.map_point(p) for p in path.points]
@@ -394,7 +402,8 @@ def export_gcode(placements):
         # QtPlasmaC refuses a material change while compensation is active.
         lines.append("G40 G90 G91.1")
         first_move = True
-        for op in placement.program.ops:
+        program = placement.cut_program
+        for op in program.ops:
             if op.kind == "lib_material":
                 continue
             if op.kind in ("material", "temp_material"):
@@ -417,7 +426,7 @@ def export_gcode(placements):
                 lines.append(_move_text(placement, op.move))
             else:
                 lines.append(mirrored_block(op.text) if placement.mirror else op.text)
-        if placement.program.ends_with_torch_on:
+        if program.ends_with_torch_on:
             lines.append("M5 $-1")
 
     lines += [";end", "M5 $-1", "G40 G90", "M68 E3 Q0", "M2"]
@@ -476,6 +485,12 @@ def load_project(path, with_options=False):
     placements = [Placement(programs[f["program"]], f["x"], f["y"], f["angle"], f.get("cut", True),
                             bool(f.get("mirror", False)) if version == MIRROR_PROJECT_VERSION else False)
                   for f in data["figures"]]
+    for placement in placements:
+        if placement.mirror:
+            try:
+                placement.cut_program
+            except ValueError as error:
+                raise ValueError(f"{placement.program.name} is mirrored, but {error}.")
     if with_options:
         return sheet, placements, {"allow_overlaps": bool(data.get("allow_overlaps", False))}
     return sheet, placements
