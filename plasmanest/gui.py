@@ -23,7 +23,8 @@ from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox
 from . import live, machine
 from .autonest import autonest, group_figures
 from .gcode import GCodeError, Program, format_number, load_program
-from .nest import Placement, Sheet, closed_loops, export_gcode, inside_first, load_project, material_warning, save_project
+from .nest import (Placement, Sheet, closed_loops, export_gcode, inside_first, load_project, material_warning,
+                   rotation, save_project)
 from .materials import available_materials, machine_work_area
 from .theme import qtplasmac_colors, stylesheet
 from .shapes import (OVERCUT, SMALL_HOLE, SMALL_HOLE_SPEED, Circle, HoleCircle, Polygon, Rectangle, Slot,
@@ -288,14 +289,33 @@ class PartItem(QGraphicsItem):
 
         self.setPos(placement.x, placement.y)
         self.setRotation(placement.angle)
+        self.set_mirror(placement.mirror)
 
     def set_number(self, number):
         self.label.setText(str(number))
-        self.label.setPos(-self.label.boundingRect().width() / 2, 0)
+        # The label is not mirrored, but where it is put is.
+        half = self.label.boundingRect().width() / 2
+        self.label.setPos(half if self.placement.mirror else -half, 0)
 
     def set_angle(self, angle):
         self.placement.angle = normalize_angle(angle)
         self.setRotation(self.placement.angle)
+        self._mirror_transform()
+
+    def set_mirror(self, mirror):
+        self.placement.mirror = bool(mirror)
+        self._mirror_transform()
+        if self.label.text():
+            self.set_number(int(self.label.text()))
+
+    def _mirror_transform(self):
+        """Placement.map_point mirrors and then turns, but Qt turns before the item's transform.
+        Mirroring after the turn is a flip across the figure's own Y axis, turned by the angle."""
+        if not self.placement.mirror:
+            self.setTransform(QTransform())
+            return
+        c, s = rotation(2 * self.placement.angle)
+        self.setTransform(QTransform(-c, -s, -s, c, 0.0, 0.0))
 
     def set_center(self, x, y):
         self.setPos(x, y)
@@ -314,7 +334,7 @@ class PartItem(QGraphicsItem):
 
     def on_sheet(self, sheet):
         # A polygon check walks every cut segment, and refresh runs for every figure while dragging.
-        key = (self.placement.x, self.placement.y, self.placement.angle, sheet)
+        key = (self.placement.x, self.placement.y, self.placement.angle, self.placement.mirror, sheet)
         if self.on_sheet_cache[0] != key:
             self.on_sheet_cache = (key, sheet.contains_placement(self.placement))
         return self.on_sheet_cache[1]
@@ -1080,13 +1100,20 @@ class AutonestDialog(QDialog):
         self.turn = QCheckBox("Turn figures 90°, 180° or 270° when it packs them lower")
         self.turn.setChecked(settings["turn"])
         form.addRow(self.turn)
+        self.mirror = QCheckBox("Also try loaded G-code mirrored")
+        self.mirror.setToolTip("Each loaded figure is also tried mirrored, at every angle, and kept mirrored "
+                               "if that packs it lower. A mirrored figure is cut the other way round. "
+                               "Figures drawn in PlasmaNest are never mirrored.")
+        self.mirror.setChecked(settings.get("mirror", False))
+        form.addRow(self.mirror)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
 
     def settings(self):
-        return {"gap": self.gap.value(), "margin": self.margin.value(), "turn": self.turn.isChecked()}
+        return {"gap": self.gap.value(), "margin": self.margin.value(), "turn": self.turn.isChecked(),
+                "mirror": self.mirror.isChecked()}
 
 
 class CornerDialog(QDialog):
@@ -1479,7 +1506,7 @@ class MainWindow(QMainWindow):
         self.materials = available_materials()
         self.rectangle_defaults = {"inside": False, "material": None, "kerf": 0.0, "leadin": 0.0}
         self.hole_circle_defaults = {"holes": 4, "hole_diameter": 10.0}
-        self.autonest_settings = {"gap": PART_GAP, "margin": PART_GAP, "turn": True}
+        self.autonest_settings = {"gap": PART_GAP, "margin": PART_GAP, "turn": True, "mirror": False}
         self._build_panel()
         self._build_actions()
         self.scene_.selectionChanged.connect(self.selection_changed)
@@ -1590,6 +1617,12 @@ class MainWindow(QMainWindow):
         self.rotate_cw = self._button("↻", lambda: self.rotate_selection(-self.rotate_step.value()), row)
         row.addWidget(self.rotate_step)
         place_form.addRow("Rotate:", row)
+        row = QHBoxLayout()
+        self.mirror_x_button = self._button("Left–right", lambda: self.mirror_selection(upside_down=False), row)
+        self.mirror_x_button.setToolTip("Mirror the selection left to right.")
+        self.mirror_y_button = self._button("Upside down", lambda: self.mirror_selection(upside_down=True), row)
+        self.mirror_y_button.setToolTip("Turn the selection upside down: mirrored top to bottom.")
+        place_form.addRow("Mirror:", row)
         self.place_box = place_box
         layout.addWidget(place_box)
 
@@ -1767,6 +1800,8 @@ class MainWindow(QMainWindow):
         action(edit_menu, "&Delete figure", self.delete_selection, QKeySequence.Delete)
         action(edit_menu, "Select &all", self.select_all, QKeySequence.SelectAll)
         action(edit_menu, "R&otate", lambda: self.rotate_selection(self.rotate_step.value()), "R")
+        action(edit_menu, "&Mirror left–right", lambda: self.mirror_selection(upside_down=False))
+        action(edit_menu, "Turn &upside down", lambda: self.mirror_selection(upside_down=True))
         action(edit_menu, "Auto&nest…", self.autonest_dialog)
 
         action(view_menu, "&Fit to window", self.fit_view, "F", True)
@@ -1790,7 +1825,8 @@ class MainWindow(QMainWindow):
         self.updating_ui = False
         has_selection = bool(selected)
         for widget in (self.copy_button, self.delete_button, self.delete_all_button,
-                       self.up_button, self.down_button, self.rotate_ccw, self.rotate_cw):
+                       self.up_button, self.down_button, self.rotate_ccw, self.rotate_cw,
+                       self.mirror_x_button, self.mirror_y_button):
             widget.setEnabled(has_selection)
         self.place_box.setEnabled(has_selection)
         self.pos_x.setEnabled(len(selected) == 1)
@@ -2232,7 +2268,8 @@ class MainWindow(QMainWindow):
         for row, part in enumerate(self.parts, 1):
             name = part.placement.program.name
             copy_numbers[name] = copy_numbers.get(name, 0) + 1
-            item = QListWidgetItem(f"{row}.  {name}  (copy {copy_numbers[name]})")
+            mirrored = ", mirrored" if part.placement.mirror else ""
+            item = QListWidgetItem(f"{row}.  {name}  (copy {copy_numbers[name]}{mirrored})")
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked if part.placement.cut else Qt.Unchecked)
             item.setToolTip("Checked: cut. Unchecked: kept in the nest but not sent to QtPlasmaC.")
@@ -2360,7 +2397,7 @@ class MainWindow(QMainWindow):
         for _ in range(count):
             for part in parts:
                 source = part.placement
-                placement = Placement(source.program, source.x, source.y, source.angle, source.cut)
+                placement = Placement(source.program, source.x, source.y, source.angle, source.cut, source.mirror)
                 self.place_free(placement)
                 added.append(self.add_part(placement))
         self.after_change(added)
@@ -2375,7 +2412,7 @@ class MainWindow(QMainWindow):
             self.autonest_settings = dialog.settings()
             self.autonest_parts(**self.autonest_settings)
 
-    def autonest_parts(self, gap=PART_GAP, margin=PART_GAP, turn=True):
+    def autonest_parts(self, gap=PART_GAP, margin=PART_GAP, turn=True, mirror=False):
         """Pack the selected figures to cut, or all of them, against the sheet's bottom edge. The
         other figures to cut stay where they are; figures not cut are neither moved nor avoided."""
         cut = self.cut_parts()
@@ -2393,16 +2430,20 @@ class MainWindow(QMainWindow):
         # Many different figures can take a few seconds.
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            moves, unplaced = autonest(self.sheet, [p.placement for p in moving], fixed, gap, margin, turn)
+            # Drawn figures keep their cut direction and lead-in, as when mirrored by hand.
+            moves, unplaced = autonest(self.sheet, [p.placement for p in moving], fixed, gap, margin, turn,
+                                       mirror, lambda placement: shape_of(placement.program) is None)
         except ValueError as error:
             QMessageBox.warning(self, APP_NAME, str(error))
             return
         finally:
             QApplication.restoreOverrideCursor()
         parts = {id(p.placement): p for p in self.parts}
+        mirrored = sum(1 for move in moves if move.mirror != move.placement.mirror)
         for move in moves:
             part = parts[id(move.placement)]
             part.set_angle(move.angle)
+            part.set_mirror(move.mirror)
             part.set_center(move.x, move.y)
         # What lies inside a contour is cut first, while the sheet round it is still attached: a
         # part in a hole before the hole, a hole before the part's outline.
@@ -2415,6 +2456,8 @@ class MainWindow(QMainWindow):
         in_holes = sum(1 for move in moves if move.host is not None)
         if in_holes:
             message += f", {in_holes} in holes"
+        if mirrored:
+            message += f", {mirrored} mirrored"
         if reordered:
             message += "; the cutting order now cuts what lies inside a contour first"
         if unplaced:
@@ -2473,6 +2516,33 @@ class MainWindow(QMainWindow):
             dx, dy = x - pivot[0], y - pivot[1]
             part.set_angle(angle + degrees)
             part.set_center(pivot[0] + c * dx - s * dy, pivot[1] + s * dx + c * dy)
+
+    def mirror_selection(self, upside_down=False):
+        """Mirror the selection as one rigid group about the same centre it rotates around: left to
+        right, or top to bottom (upside down). Figures drawn in PlasmaNest are left alone: their cut
+        direction and lead-in are part of the figure."""
+        selected = self.selected_parts()
+        if not selected:
+            return False
+        if any(part.drawn_shape is not None for part in selected):
+            self.statusBar().showMessage("Figures drawn in PlasmaNest cannot be mirrored. Draw them the way "
+                                         "they should be cut instead.", 10000)
+            return False
+        px, py = self.selection_pivot(selected)
+        for part in selected:
+            placement = part.placement
+            # Flipping a turned figure on the sheet is the flip in its own coordinates turned the
+            # other way: left-right gives -angle, upside down 180 - angle.
+            part.set_angle(180.0 - placement.angle if upside_down else -placement.angle)
+            part.set_mirror(not placement.mirror)
+            if upside_down:
+                part.set_center(placement.x, 2 * py - placement.y)
+            else:
+                part.set_center(2 * px - placement.x, placement.y)
+        self.rebuild_list()
+        self.refresh()
+        self.commit()
+        return True
 
     def nudge_selection(self, dx, dy):
         for part in self.selected_parts():
@@ -2626,7 +2696,7 @@ class MainWindow(QMainWindow):
     def current_state(self):
         return (self.sheet,
                 tuple((p.placement.program, round(p.placement.x, 6), round(p.placement.y, 6),
-                       round(p.placement.angle, 6), p.placement.cut) for p in self.parts),
+                       round(p.placement.angle, 6), p.placement.cut, p.placement.mirror) for p in self.parts),
                 self.allow_overlaps.isChecked())
 
     def allow_overlaps_toggled(self, checked):
@@ -2661,8 +2731,8 @@ class MainWindow(QMainWindow):
         self.update_sheet_panel()
         for part in list(self.parts):
             self.remove_part(part)
-        for program, x, y, angle, cut in figures:
-            self.add_part(Placement(program, x, y, angle, cut))
+        for program, x, y, angle, cut, mirror in figures:
+            self.add_part(Placement(program, x, y, angle, cut, mirror))
         self.rebuild_list()
         self.selection_changed()
         self.refresh()

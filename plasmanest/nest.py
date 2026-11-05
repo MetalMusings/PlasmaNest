@@ -5,9 +5,10 @@ import json
 import math
 from dataclasses import dataclass
 
-from .gcode import Program, format_number
+from .gcode import Program, format_number, split_comments, tokenize
 
 PROJECT_VERSION = 2
+MIRROR_PROJECT_VERSION = 3  # version 2 with mirrored figures
 GEOMETRY_TOLERANCE = 1e-6  # mm
 
 
@@ -23,27 +24,36 @@ def rotation(angle):
 @dataclass
 class Placement:
     """A figure: x, y is where the centre of the program's bounding box ends up. Only figures with
-    cut set go to QtPlasmaC; the others stay in the nest for later."""
+    cut set go to QtPlasmaC; the others stay in the nest for later. mirror flips the program
+    left to right about that centre before it is turned by angle; upside down is the same flip
+    turned 180 degrees."""
     program: Program
     x: float = 0.0
     y: float = 0.0
     angle: float = 0.0
     cut: bool = True
+    mirror: bool = False
 
     def map_point(self, point):
         c, s = rotation(self.angle)
         dx, dy = point[0] - self.program.center[0], point[1] - self.program.center[1]
+        if self.mirror:
+            dx = -dx
         return (c * dx - s * dy + self.x, s * dx + c * dy + self.y)
 
     def unmap_point(self, point):
         """Program coordinates of a point on the sheet: the inverse of map_point."""
         c, s = rotation(self.angle)
         dx, dy = point[0] - self.x, point[1] - self.y
-        return (c * dx + s * dy + self.program.center[0], -s * dx + c * dy + self.program.center[1])
+        px, py = c * dx + s * dy, -s * dx + c * dy
+        if self.mirror:
+            px = -px
+        return (px + self.program.center[0], py + self.program.center[1])
 
     def map_vector(self, vector):
         c, s = rotation(self.angle)
-        return (c * vector[0] - s * vector[1], s * vector[0] + c * vector[1])
+        vx, vy = (-vector[0] if self.mirror else vector[0]), vector[1]
+        return (c * vx - s * vy, s * vx + c * vy)
 
     def bounds(self):
         """Bounding box of the cut geometry on the sheet."""
@@ -310,16 +320,49 @@ class Sheet:
         return True
 
 
+# A mirror image runs the other way round: arcs change direction, and cutter compensation must
+# change side to stay on the same side of the material.
+MIRRORED_G = {2.0: "3", 3.0: "2", 41.0: "42", 42.0: "41", 41.1: "42.1", 42.1: "41.1"}
+
+
+def _mirrored_word(word):
+    """A word such as G41.1 as it must read in a mirror image."""
+    if word[:1].upper() != "G":
+        return word
+    try:
+        number = round(float(word[1:]), 2)
+    except ValueError:
+        return word
+    return "G" + MIRRORED_G[number] if number in MIRRORED_G else word
+
+
+def mirrored_block(text):
+    """A G-code line, other than a move, as it must read in a mirror image. Comments are kept."""
+    code, comments = split_comments(text)
+    if not code or code.startswith("#"):
+        return text
+    try:
+        words = tokenize(code)
+    except ValueError:
+        return text
+    old = [f"{letter}{value}" for letter, value in words]
+    new = [_mirrored_word(word) for word in old]
+    if new == old:
+        return text
+    return " ".join(new + comments)
+
+
 def _move_text(placement, move):
     if move.incremental:
         x, y = placement.map_vector((move.end[0] - move.start[0], move.end[1] - move.start[1]))
     else:
         x, y = placement.map_point(move.end)
-    words = [f"G{move.mode}", f"X{format_number(x)}", f"Y{format_number(y)}"]
+    mode = {2: 3, 3: 2}.get(move.mode, move.mode) if placement.mirror else move.mode
+    words = [f"G{mode}", f"X{format_number(x)}", f"Y{format_number(y)}"]
     if move.center is not None:
         i, j = placement.map_vector(move.center)
         words += [f"I{format_number(i)}", f"J{format_number(j)}"]
-    words += move.extras
+    words += [_mirrored_word(word) for word in move.extras] if placement.mirror else move.extras
     if move.comment:
         words.append(move.comment)
     return " ".join(words)
@@ -346,7 +389,8 @@ def export_gcode(placements):
     skip_wait = False
     for number, placement in enumerate(placements, 1):
         lines.append(f";part {number} x={format_number(placement.x)} "
-                     f"y={format_number(placement.y)} a={format_number(placement.angle)}")
+                     f"y={format_number(placement.y)} a={format_number(placement.angle)}"
+                     + (" mirrored" if placement.mirror else ""))
         # QtPlasmaC refuses a material change while compensation is active.
         lines.append("G40 G90 G91.1")
         first_move = True
@@ -372,7 +416,7 @@ def export_gcode(placements):
                 first_move = False
                 lines.append(_move_text(placement, op.move))
             else:
-                lines.append(op.text)
+                lines.append(mirrored_block(op.text) if placement.mirror else op.text)
         if placement.program.ends_with_torch_on:
             lines.append("M5 $-1")
 
@@ -396,13 +440,21 @@ def save_project(path, sheet, placements, allow_overlaps=False):
     for placement in placements:
         if placement.program not in programs:
             programs.append(placement.program)
+    figures = []
+    for p in placements:
+        figure = {"program": programs.index(p.program), "x": p.x, "y": p.y, "angle": p.angle, "cut": p.cut}
+        if p.mirror:
+            figure["mirror"] = True
+        figures.append(figure)
+    # An older PlasmaNest would ignore the mirror and cut the figure the wrong way round, so a
+    # project with a mirrored figure gets a version it refuses.
+    mirrored = any(p.mirror for p in placements)
     data = {
-        "version": PROJECT_VERSION,
+        "version": MIRROR_PROJECT_VERSION if mirrored else PROJECT_VERSION,
         "sheet": {"corners": [list(corner) for corner in sheet.corners]},
         "allow_overlaps": bool(allow_overlaps),
         "programs": [{"name": p.name, "text": p.text} for p in programs],
-        "figures": [{"program": programs.index(p.program), "x": p.x, "y": p.y, "angle": p.angle,
-                     "cut": p.cut} for p in placements],
+        "figures": figures,
     }
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(data, handle, indent=1, ensure_ascii=False)
@@ -416,12 +468,13 @@ def load_project(path, with_options=False):
     version = data.get("version")
     if version == 1:
         sheet = Sheet.rectangle(data["sheet"]["width"], data["sheet"]["height"])
-    elif version == PROJECT_VERSION:
+    elif version in (PROJECT_VERSION, MIRROR_PROJECT_VERSION):
         sheet = Sheet(data["sheet"]["corners"])
     else:
         raise ValueError("Unknown version of the project file.")
     programs = [Program(p["name"], p["text"]) for p in data["programs"]]
-    placements = [Placement(programs[f["program"]], f["x"], f["y"], f["angle"], f.get("cut", True))
+    placements = [Placement(programs[f["program"]], f["x"], f["y"], f["angle"], f.get("cut", True),
+                            bool(f.get("mirror", False)) if version == MIRROR_PROJECT_VERSION else False)
                   for f in data["figures"]]
     if with_options:
         return sheet, placements, {"allow_overlaps": bool(data.get("allow_overlaps", False))}

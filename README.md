@@ -15,13 +15,15 @@ polygon, copies of loaded G-code and a figure left out of the cut](docs/screensh
 
 ## Features
 
-- **Load G-code** from your CAM program or QtPlasmaC's CONVERSATIONAL, copy, move and rotate it,
-  and set the cutting order. Files that cannot be moved safely are refused rather than guessed at.
+- **Load G-code** from your CAM program or QtPlasmaC's CONVERSATIONAL, copy, move, rotate and
+  mirror it, and set the cutting order. Files that cannot be moved safely are refused rather than
+  guessed at.
 - **Draw figures:** rectangles, circles, hole circles, slots and polygons, as parts or holes. The
   kerf comes from QtPlasmaC's material file, and lead-ins are placed by pointing at the outline.
 - **Small holes** under 30 mm are cut at 60 % speed, with half-circle lead-in and lead-out.
 - **Autonest** packs the figures against the bottom edge of the sheet, with a gap between them and a
-  margin to the edge, turning them in 90° steps where that packs them lower. Small parts go into
+  margin to the edge, turning them in 90° steps, and if you allow it mirroring loaded G-code, where
+  that packs them lower. Small parts go into
   the holes of larger ones, and whatever lies inside a contour is cut first. See
   [Autonest](#autonest).
 - **Resize by dragging** a drawn figure's outline, or type exact sizes.
@@ -191,7 +193,8 @@ export elsewhere the button does not find the file, and PlasmaNest's status bar 
 | Back to a rectangle | **Rectangle** gives a rectangle with the polygon's outer size, with its corner at X0 Y0. |
 | Move | Drag with the left mouse button, type X/Y in the panel, or use the arrow keys (1 mm, 10 mm with Shift). |
 | Rotate | Hold the right mouse button on the figure and drag around it, and the figure follows the pointer (Ctrl gives 15° steps). The green ring, Shift+mouse wheel, the R key, the buttons in the panel and typing the angle also work. |
-| Select several | Drag a box on empty space, or Ctrl-click. Several figures rotate as a group. |
+| Mirror | **Left–right** or **Upside down** under Mirror in the panel, or the Edit menu, flips loaded G-code. Upside down is the same as mirroring left to right and turning 180°. The list shows "mirrored". Arcs change direction (G2 ↔ G3) and compensation changes side (G41 ↔ G42), so the part keeps its shape, but **the cut runs the other way round**: a part cut clockwise is now cut anticlockwise, which puts the good side of the plasma cut on the scrap. Figures drawn in PlasmaNest cannot be mirrored. |
+| Select several | Drag a box on empty space, or Ctrl-click. Several figures rotate and mirror as a group. |
 | Draw a rectangle | **Draw rectangle**: a label at the pointer shows X and Y. Press at a corner and drag to the opposite corner, or click both. The label shows width × height. The corners land on whole millimetres, and Esc cancels. Then the exact **Width** and **Height** can be typed in the panel: type the width, press Tab, type the height and press Enter. The first corner stays put. |
 | Draw a circle | **Draw circle**: press at the centre and drag out to the edge, or click the centre and then the edge. The label shows X and Y and then the diameter in whole millimetres. The exact **Diameter** is typed in the panel. |
 | Draw a hole circle | **Draw hole circle**: press at the centre and drag out to the hole centres, or click the centre and then a hole centre. The new hole circle gets the number and size of holes used last (at first 4 × Ø10). |
@@ -241,6 +244,7 @@ stays in one piece for later.
 | Gap between figures | The least distance between the cut paths of two figures, lead-ins included. Allow for the kerf: the gap is measured between programmed paths. |
 | Margin to the sheet edge | The least distance from any cut path to the sheet's edge. |
 | Turn figures | Allows turns of 90°, 180° and 270° when that packs a figure lower. A figure is only turned if it gains something. |
+| Also try loaded G-code mirrored | Off at first. Each figure of loaded G-code is also tried mirrored, at every angle tried, and is only mirrored if that packs it lower. A mirrored figure is cut the other way round (see Mirror under [Use](#use)). Figures drawn in PlasmaNest, and groups holding one, are never mirrored. |
 
 The dialog remembers the values until PlasmaNest is closed. At first both distances are 10 mm.
 
@@ -315,6 +319,9 @@ When a drawn figure is selected, the panel shows the **Rectangle**, **Circle**, 
 ### What the export does to the G-code
 
 - All coordinates are converted to their final values, and arc centres (I/J) are rotated too.
+  Mirrored figures get G2 and G3 swapped, and G41/G42 (also `G41.1`/`G42.1`) swapped. A project
+  with a mirrored figure is saved as version 3, which older versions of PlasmaNest refuse rather
+  than cut unmirrored.
 - The file is always in millimetres with a single program end (`M2`). Inch files are converted to
   mm, including numeric F values.
 - R arcs are rewritten as I/J. `F#<_hal[plasmac.cut-feed-rate]>`, `M3 $n`, `M5 $n`, `M67`, `M68`,

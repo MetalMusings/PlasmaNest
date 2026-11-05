@@ -269,12 +269,14 @@ def group_figures(placements):
 
 @dataclass
 class Move:
-    """Where autonest puts a figure. host is the figure whose hole it was put in, or None."""
+    """Where autonest puts a figure. host is the figure whose hole it was put in, or None.
+    mirror is whether the figure ends up mirrored."""
     placement: Placement
     x: float
     y: float
     angle: float
     host: Placement = None
+    mirror: bool = False
 
 
 def _inside_polygon(point, polygon):
@@ -375,19 +377,28 @@ class _Group:
         self.pivot = ((min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2)
         self.area = Footprint(self.hull).area if len(self.hull) >= 3 else 0.0
 
-    def turned(self, degrees):
-        """The hull turned by degrees about the pivot, with the pivot at the origin."""
+    def turned(self, degrees, flip=False):
+        """The hull turned by degrees about the pivot, with the pivot at the origin. flip first
+        mirrors it left to right about the pivot."""
         c, s = rotation(degrees)
-        return [(c * (x - self.pivot[0]) - s * (y - self.pivot[1]),
-                 s * (x - self.pivot[0]) + c * (y - self.pivot[1])) for x, y in self.hull]
+        sign = -1.0 if flip else 1.0
+        points = [(c * sign * (x - self.pivot[0]) - s * (y - self.pivot[1]),
+                   s * sign * (x - self.pivot[0]) + c * (y - self.pivot[1])) for x, y in self.hull]
+        # A mirror image runs clockwise: make it an anticlockwise hull again.
+        return convex_hull(points) if flip else points
 
-    def moves(self, degrees, dx, dy, host=None):
+    def moves(self, degrees, dx, dy, host=None, flip=False):
+        """flip mirrors the group left to right about its pivot before it is turned: each
+        figure's mirror is toggled and its angle negated, as when mirrored by hand."""
         c, s = rotation(degrees)
         result = []
         for placement in self.placements:
             px, py = placement.x - self.pivot[0], placement.y - self.pivot[1]
+            angle = placement.angle
+            if flip:
+                px, angle = -px, -angle
             result.append(Move(placement, c * px - s * py + dx, s * px + c * py + dy,
-                               math.fmod(placement.angle + degrees, 360.0) % 360.0, host))
+                               math.fmod(angle + degrees, 360.0) % 360.0, host, placement.mirror != flip))
         return result
 
 
@@ -477,8 +488,11 @@ def _lowest(body, edge, sheet, obstacles, best_top, exact, floors):
     return None if best is None else (best[1], best[2])
 
 
-def autonest(sheet, moving, fixed=(), gap=10.0, margin=10.0, turn=True):
+def autonest(sheet, moving, fixed=(), gap=10.0, margin=10.0, turn=True, mirror=False, can_mirror=None):
     """Pack the moving placements against the bottom edge of the sheet, around the fixed ones.
+
+    With mirror, a group whose every placement passes can_mirror is also tried mirrored, at each
+    angle tried. A mirrored figure is only chosen if it packs lower: on a tie it stays as it was.
 
     Returns (moves, unplaced): a Move for every moving placement, and the placements that did not
     fit. Those are moved beside the sheet, to the right, so they cannot lie on the packed ones.
@@ -510,17 +524,21 @@ def autonest(sheet, moving, fixed=(), gap=10.0, margin=10.0, turn=True):
     exact, floors = {}, {}
     for number, group in enumerate(groups):
         owner = ("moved", number)
-        turned = {degrees: simplify_hull(group.turned(degrees)) for degrees in angles}
-        bodies = {degrees: Footprint(grow_hull(hull, body_grow)) for degrees, hull in turned.items()}
-        sizes = {degrees: (box[2] - box[0], box[3] - box[1])
-                 for degrees, box in ((d, _box(hull)) for d, hull in turned.items())}
+        # As it is first, so that on a tie it keeps its orientation.
+        orientations = [(degrees, False) for degrees in angles]
+        if mirror and group.hull and all(can_mirror is None or can_mirror(p) for p in group.placements):
+            orientations += [(degrees, True) for degrees in angles]
+        turned = {o: simplify_hull(group.turned(*o)) for o in orientations}
+        bodies = {o: Footprint(grow_hull(hull, body_grow)) for o, hull in turned.items()}
+        sizes = {o: (box[2] - box[0], box[3] - box[1])
+                 for o, box in ((o, _box(hull)) for o, hull in turned.items())}
         best = None
         # A hole costs no sheet, so any hole that takes the figure beats the free sheet.
         for hole in holes:
             hx0, hy0, hx1, hy1 = hole.box
             # Most holes are far too small: try the box first.
-            fitting = [degrees for degrees in angles
-                       if sizes[degrees][0] + 2 * gap <= hx1 - hx0 and sizes[degrees][1] + 2 * gap <= hy1 - hy0]
+            fitting = [o for o in orientations
+                       if sizes[o][0] + 2 * gap <= hx1 - hx0 and sizes[o][1] + 2 * gap <= hy1 - hy0]
             if not fitting:
                 continue
             in_hole = [o for o in obstacles if o.owner != hole.owner and o.maxx > hx0 and o.minx < hx1
@@ -537,7 +555,7 @@ def autonest(sheet, moving, fixed=(), gap=10.0, margin=10.0, turn=True):
                 if best is None or top < best[0] - TIE or (abs(top - best[0]) <= TIE and found[0] < best[2] - TIE):
                     best = (top, degrees, found[0], found[1], body, hole)
         if best is None:
-            for degrees in angles:
+            for degrees in orientations:
                 hull = turned[degrees]
                 body = bodies[degrees]
                 edge = Footprint(grow_hull(hull, edge_grow))
@@ -551,14 +569,14 @@ def autonest(sheet, moving, fixed=(), gap=10.0, margin=10.0, turn=True):
         if best is None:
             unplaced.append(group)
             continue
-        _, degrees, x, y, body, hole = best
+        _, (degrees, flip), x, y, body, hole = best
         footprint = body.moved(x, y)
         footprint.owner = owner
         obstacles.append(footprint)
-        placed = group.moves(degrees, x, y, None if hole is None else hole.host)
+        placed = group.moves(degrees, x, y, None if hole is None else hole.host, flip)
         moves += placed
         # Its own holes can take smaller figures in turn.
-        copies = [Placement(m.placement.program, m.x, m.y, m.angle) for m in placed]
+        copies = [Placement(m.placement.program, m.x, m.y, m.angle, mirror=m.mirror) for m in placed]
         for new in find_holes(copies, gap, owner):
             new.host = placed[new.host].placement
             holes.append(new)
