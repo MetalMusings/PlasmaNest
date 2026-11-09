@@ -12,7 +12,7 @@ from PyQt5 import sip
 from PyQt5.QtCore import (QEvent, QLocale, QObject, QPoint, QPointF, QRectF, QSize, QSocketNotifier, Qt, QTimer,
                           pyqtSignal)
 from PyQt5.QtGui import (QBrush, QColor, QFontMetrics, QKeySequence, QMouseEvent, QPainter, QPainterPath, QPainterPathStroker,
-                         QPen, QPolygonF, QTransform)
+                         QPen, QPolygonF, QTouchDevice, QTransform)
 from PyQt5.QtWidgets import (QAbstractItemView, QAction, QApplication, QCheckBox, QComboBox, QDialog,
                              QDialogButtonBox, QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
                              QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsSimpleTextItem,
@@ -42,6 +42,10 @@ ROTATE_SNAP = 15.0     # degrees with Ctrl held
 ROTATE_MIN_RADIUS = 15 # pixels from the pivot; closer than this the angle is too jumpy
 DEFAULT_SHEET = (3000.0, 1500.0)  # mm, without LinuxCNC to give the work area
 RESIZE_REACH = 6  # pixels from a drawn figure's outline where dragging resizes it
+TOUCH_REACH = 18  # the same, and for closing a polygon, when a finger presses
+TOUCH_SLOP = 8    # pixels a finger moves before it drags rather than taps
+TOUCH_HOLD_MS = 500  # a finger held still this long on empty space drags a selection box, not the view
+ZOOM_STEP = 1.2   # per wheel step and per zoom button press
 
 # QtPlasmaC (2.9) keeps the shapes accepted in CONVERSATIONAL here; SEND loads this file.
 CONVERSATIONAL_FILE = "/tmp/qtplasmac/backup.ngc"
@@ -448,6 +452,8 @@ class NestView(QGraphicsView):
     """Zoom with the wheel, pan with the middle button or by right-dragging empty space.
 
     Right-dragging a figure rotates it, or the whole selection if it is part of one.
+
+    On a touch screen one finger acts as the left button, and two fingers zoom and pan.
     """
 
     def __init__(self, scene, window):
@@ -482,6 +488,14 @@ class NestView(QGraphicsView):
         self.leadin_choice = None
         self.shape_start = None  # its first corner, in scene mm
         self.shape_press = None  # view position of that press, to tell a drag from a click
+        self.viewport().setAttribute(Qt.WA_AcceptTouchEvents)
+        self.touch = None        # the finger(s) on the screen, see touch_event
+        self.by_touch = False    # the left button is a finger: grips are easier to hit
+        self.last_tap = None     # (time, view position) of the last tap, for double taps
+        self.touch_timer = QTimer(self)
+        self.touch_timer.setSingleShot(True)
+        self.touch_timer.setInterval(TOUCH_HOLD_MS)
+        self.touch_timer.timeout.connect(self.touch_hold)
 
     # ------------------------------------------------------------ polygon drawing
 
@@ -528,7 +542,8 @@ class NestView(QGraphicsView):
         if len(self.drawing) < 3:
             return False
         first = self.mapFromScene(QPointF(*self.drawing[0]))
-        return math.hypot(pos.x() - first.x(), pos.y() - first.y()) <= CLOSE_POLYGON_RADIUS
+        radius = max(CLOSE_POLYGON_RADIUS, TOUCH_REACH) if self.by_touch else CLOSE_POLYGON_RADIUS
+        return math.hypot(pos.x() - first.x(), pos.y() - first.y()) <= radius
 
     def finish_drawing(self, closed=True):
         if self.drawing_target == "polygon":
@@ -806,7 +821,7 @@ class NestView(QGraphicsView):
     def grip_at(self, pos):
         """(part, shape, handle, normal on the sheet) for a drawn figure's outline under the pointer."""
         scene = self.mapToScene(pos)
-        reach = RESIZE_REACH / abs(self.transform().m11())
+        reach = (TOUCH_REACH if self.by_touch else RESIZE_REACH) / abs(self.transform().m11())
         for part in sorted(self.window_.parts, key=lambda p: not p.isSelected()):
             shape = part.drawn_shape
             if shape is None:
@@ -890,20 +905,178 @@ class NestView(QGraphicsView):
             step = self.window_.rotate_step.value()
             self.window_.rotate_selection(step if steps > 0 else -step)
             return
-        factor = 1.2 ** steps
+        # Keep the point under the pointer still. Qt's AnchorUnderMouse uses the screen position,
+        # which is wrong when PlasmaNest is embedded in QtPlasmaC.
+        anchor = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        self.zoom_at(anchor, ZOOM_STEP ** steps)
+
+    def zoom_at(self, anchor, factor):
+        """Zoom by factor, keeping the scene point at the view position anchor still."""
+        anchor = QPointF(anchor).toPoint()
         current = abs(self.transform().m11())
-        if 0.005 < current * factor < 200:
-            # Keep the point under the pointer still. Qt's AnchorUnderMouse uses the screen position,
-            # which is wrong when PlasmaNest is embedded in QtPlasmaC.
-            anchor = event.position().toPoint() if hasattr(event, "position") else event.pos()
-            before = self.mapToScene(anchor)
-            self.setTransformationAnchor(QGraphicsView.NoAnchor)
-            self.scale(factor, factor)
-            after = self.mapToScene(anchor)
-            self.translate(after.x() - before.x(), after.y() - before.y())
-            self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
-            self.window_.user_has_view = True  # keep this view when figures change
-            self.window_.update_handles()
+        if not 0.005 < current * factor < 200:
+            return
+        before = self.mapToScene(anchor)
+        self.setTransformationAnchor(QGraphicsView.NoAnchor)
+        self.scale(factor, factor)
+        after = self.mapToScene(anchor)
+        self.translate(after.x() - before.x(), after.y() - before.y())
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.window_.user_has_view = True  # keep this view when figures change
+        self.window_.update_handles()
+
+    def zoom_steps(self, steps):
+        """Zoom about the middle of the view, for the zoom buttons."""
+        self.zoom_at(self.viewport().rect().center(), ZOOM_STEP ** steps)
+
+    def pan_by(self, dx, dy):
+        """Move the drawing by (dx, dy) view pixels."""
+        scale = abs(self.transform().m11())
+        self.setTransformationAnchor(QGraphicsView.NoAnchor)
+        self.translate(dx / scale, -dy / scale)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.window_.user_has_view = True
+
+    # ------------------------------------------------------------------- touch
+
+    TOUCH_EVENTS = {QEvent.TouchBegin: "begin", QEvent.TouchUpdate: "update", QEvent.TouchEnd: "end",
+                    QEvent.TouchCancel: "cancel"}
+
+    def touch_event(self, kind, points):
+        """A touch screen: one finger is the left button, but pans on empty space; two fingers zoom
+        and pan. A finger held still on empty space for TOUCH_HOLD_MS drags a selection box instead.
+
+        points are (view position, released) for the fingers in the event. A finger only presses
+        the button when it has moved TOUCH_SLOP pixels (a drag) or is lifted (a tap), so that a
+        second finger landing a moment later starts a pinch rather than a drag. A drag that a
+        second finger interrupts is moved back to where it started, let go and undone.
+        """
+        if kind == "cancel":
+            self.touch_timer.stop()
+            if self.touch is not None and self.touch["mode"] == "mouse":
+                self.touch_cancel_drag()
+            self.touch = None
+            return
+        down = [pos for pos, released in points if not released]
+        if self.touch is None:
+            if not down:
+                return
+            self.touch = {"mode": "wait", "start": QPointF(down[0]), "last": QPointF(down[0]), "pinch": None,
+                          "hold": False}
+            self.touch_timer.start()
+        touch = self.touch
+        if len(down) >= 2 and touch["mode"] != "pinch":
+            self.touch_timer.stop()
+            if touch["mode"] == "mouse":
+                self.touch_cancel_drag()
+            touch["mode"] = "pinch"
+        if touch["mode"] == "pinch":
+            if len(down) >= 2:
+                a, b = QPointF(down[0]), QPointF(down[1])
+                center = (a + b) / 2.0
+                distance = math.hypot(a.x() - b.x(), a.y() - b.y())
+                if touch["pinch"] is not None:
+                    last_center, last_distance = touch["pinch"]
+                    self.pan_by(center.x() - last_center.x(), center.y() - last_center.y())
+                    if last_distance > 1 and distance > 1:
+                        self.zoom_at(center, distance / last_distance)
+                touch["pinch"] = (center, distance)
+            else:
+                touch["pinch"] = None  # a finger lifted: the next pair starts afresh
+            if not down:
+                self.touch = None
+            return
+        pos = QPointF(down[0]) if down else QPointF(points[0][0]) if points else touch["last"]
+        last, touch["last"] = touch["last"], pos
+        if touch["mode"] == "pan":
+            self.pan_by(pos.x() - last.x(), pos.y() - last.y())
+            if not down:
+                self.touch = None
+            return
+        if touch["mode"] == "wait":
+            if not down:
+                self.touch_timer.stop()
+                self.touch = None
+                self.touch_tap(touch["start"])
+                return
+            start = touch["start"]
+            if math.hypot(pos.x() - start.x(), pos.y() - start.y()) < TOUCH_SLOP:
+                return
+            self.touch_timer.stop()
+            if not touch["hold"] and not self.touch_grabs(start):
+                touch["mode"] = "pan"
+                self.pan_by(pos.x() - start.x(), pos.y() - start.y())
+                return
+            touch["mode"] = "mouse"
+            touch["undo_index"] = self.window_.undo_index
+            self.by_touch = True
+            self.send_mouse(QEvent.MouseButtonPress, start)
+        if down:
+            self.send_mouse(QEvent.MouseMove, pos)
+        else:
+            self.touch = None
+            self.send_mouse(QEvent.MouseButtonRelease, pos)
+            self.by_touch = False
+
+    def touch_grabs(self, pos):
+        """Whether a finger at pos takes hold of something, rather than panning the view: a figure,
+        its rotation ring or outline, or anything while drawing."""
+        if self.drawing is not None or self.shape_mode is not None:
+            return True
+        if any(isinstance(item, RotateHandle) for item in self.items(QPointF(pos).toPoint())):
+            return True
+        if self.part_at(QPointF(pos).toPoint()) is not None:
+            return True
+        self.by_touch = True
+        try:
+            return self.grip_at(QPointF(pos).toPoint()) is not None
+        finally:
+            self.by_touch = False
+
+    def touch_hold(self):
+        """The finger has been still: on empty space it now drags a selection box."""
+        touch = self.touch
+        if touch is not None and touch["mode"] == "wait" and not self.touch_grabs(touch["start"]):
+            touch["hold"] = True
+            self.window_.statusBar().showMessage("Drag to select", 3000)
+
+    def touch_tap(self, pos):
+        now = time.monotonic()
+        double = (self.last_tap is not None
+                  and now - self.last_tap[0] <= QApplication.doubleClickInterval() / 1000.0
+                  and math.hypot(pos.x() - self.last_tap[1].x(), pos.y() - self.last_tap[1].y()) <= TOUCH_REACH)
+        self.last_tap = None if double else (now, pos)
+        self.by_touch = True
+        if double:
+            self.send_mouse(QEvent.MouseButtonDblClick, pos)
+        else:
+            self.send_mouse(QEvent.MouseButtonPress, pos)
+        self.send_mouse(QEvent.MouseButtonRelease, pos)
+        self.by_touch = False
+
+    def touch_cancel_drag(self):
+        start = self.touch["start"]
+        self.send_mouse(QEvent.MouseMove, start)
+        self.send_mouse(QEvent.MouseButtonRelease, start)
+        self.by_touch = False
+        # Moved back, but not to the last bit: put back the state from before the drag, and take
+        # away any undo step the release made.
+        window = self.window_
+        index = self.touch["undo_index"]
+        if index >= 0:
+            del window.undo_stack[index + 1:]
+            window.undo_index = index
+            window.restore(window.undo_stack[index])
+
+    def send_mouse(self, kind, pos):
+        """Send the viewport a left button event at view position pos."""
+        viewport = self.viewport()
+        local = QPointF(pos)
+        screen = QPointF(viewport.mapToGlobal(QPoint(0, 0))) + local
+        window = QPointF(viewport.mapTo(viewport.window(), QPoint(0, 0))) + local
+        button = Qt.NoButton if kind == QEvent.MouseMove else Qt.LeftButton
+        buttons = Qt.NoButton if kind == QEvent.MouseButtonRelease else Qt.LeftButton
+        QApplication.sendEvent(viewport, QMouseEvent(kind, local, window, screen, button, buttons, Qt.NoModifier))
 
     MOUSE_EVENTS = (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseMove,
                     QEvent.MouseButtonDblClick)
@@ -925,6 +1098,13 @@ class NestView(QGraphicsView):
             else:
                 QToolTip.hideText()
                 event.ignore()
+            return True
+        if event.type() in self.TOUCH_EVENTS:
+            if event.device().type() != QTouchDevice.TouchScreen:
+                return super().viewportEvent(event)  # a touch pad moves the pointer instead
+            points = [(p.pos(), p.state() == Qt.TouchPointReleased) for p in event.touchPoints()]
+            self.touch_event(self.TOUCH_EVENTS[event.type()], points)
+            event.accept()
             return True
         if event.type() in self.MOUSE_EVENTS:
             local = event.localPos()
@@ -983,11 +1163,7 @@ class NestView(QGraphicsView):
         if self.pan_from is not None:
             delta = event.pos() - self.pan_from
             self.pan_from = event.pos()
-            scale = abs(self.transform().m11())
-            self.setTransformationAnchor(QGraphicsView.NoAnchor)
-            self.translate(delta.x() / scale, -delta.y() / scale)
-            self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
-            self.window_.user_has_view = True
+            self.pan_by(delta.x(), delta.y())
             event.accept()
             return
         position = self.mapToScene(event.pos())
@@ -1752,7 +1928,10 @@ class MainWindow(QMainWindow):
                             "Right drag on a figure: rotate (Ctrl: 15° steps).\n"
                             "Wheel: zoom. Shift+wheel: rotate.\n"
                             "Right drag on empty space or middle drag: pan.\n"
-                            "Arrows: move 1 mm (Shift: 10 mm).")
+                            "Arrows: move 1 mm (Shift: 10 mm).\n"
+                            "Touch: tap to select, drag a figure to move it,\n"
+                            "drag empty space to pan, two fingers to zoom.\n"
+                            "Hold a finger still, then drag: select with a box.")
         help_label.setWordWrap(True)
         help_label.setStyleSheet(f"color: {COLOR_HELP.name()};")
         layout.addWidget(help_label)
@@ -1824,6 +2003,8 @@ class MainWindow(QMainWindow):
         action(edit_menu, "Auto&nest…", self.autonest_dialog)
 
         action(view_menu, "&Fit to window", self.fit_view, "F", True)
+        action(view_menu, "Zoom &in", lambda: self.view.zoom_steps(1), QKeySequence.ZoomIn, True)
+        action(view_menu, "Zoom &out", lambda: self.view.zoom_steps(-1), QKeySequence.ZoomOut, True)
 
     # --------------------------------------------------------------- selection
 

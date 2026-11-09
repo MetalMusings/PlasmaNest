@@ -207,7 +207,8 @@ export elsewhere the button does not find the file, and PlasmaNest's status bar 
 | Cutting order | The list shows the order. Change it with **Cut earlier** and **Cut later**. |
 | Choose what to cut | Uncheck a figure in the list to leave it out: it stays in the nest, drawn grey and dashed, but is neither exported nor sent to MAIN. It is not checked for overlaps or the sheet's edge either, so it can wait beside the sheet. The check boxes are saved in the project, copies get their original's, and Space toggles the selected row. |
 | Undo | Ctrl+Z. Redo with Ctrl+Y (Linux: Ctrl+Shift+Z). |
-| View | The mouse wheel zooms, the middle button or a right drag on empty space pans, F fits to the window. |
+| View | The mouse wheel zooms, the middle button or a right drag on empty space pans, F fits to the window. **Zoom in** and **Zoom out** in the toolbar (Ctrl++ and Ctrl+−) zoom about the middle. |
+| Touch screen | One finger works as the left mouse button: tap to select or click, drag to move a figure, double tap to finish drawing. Dragging empty space pans; hold the finger still for half a second first to select with a box instead. Two fingers zoom (pinch) and pan (move both). A drag that a second finger joins is taken back. A finger reaches a drawn figure's outline from further away than the mouse. Rotate with the green ring or the panel's buttons. |
 
 Figures outside the sheet turn **red** and overlapping figures turn **orange**. Overlaps stop the
 nest going to MAIN and are asked about before an export, unless **Allow overlapping figures** is

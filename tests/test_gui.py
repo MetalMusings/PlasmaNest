@@ -1643,3 +1643,173 @@ def test_autonest_puts_a_figure_in_a_drawn_hole_and_cuts_it_first(window):
     window.undo()
     assert [p.placement.program for p in window.parts] == [part.placement.program, hole.placement.program,
                                                            small.placement.program]
+
+
+# ------------------------------------------------------------------ touch screen
+# PyQt5 cannot make QTouchEvents without a registered touch device, so these call the view's
+# handler with what viewportEvent takes from them: (view position, released) per finger.
+
+def touch(win, kind, *points, released=False):
+    win.view.touch_event(kind, [(QPointF(p), released) for p in points])
+
+
+def finger_drag(win, start, end, steps=5):
+    touch(win, "begin", start)
+    for k in range(1, steps + 1):
+        touch(win, "update", start + (end - start) * k / steps)
+    touch(win, "end", end, released=True)
+
+
+def test_tap_selects_a_figure(window):
+    window.load_paths([FLANGE])
+    part = window.parts[0]
+    window.scene_.clearSelection()
+    point = to_view(window, *edge_point(part))
+    touch(window, "begin", point)
+    touch(window, "end", point, released=True)
+    assert part.isSelected()
+    assert not window.view.by_touch
+
+
+def test_finger_drag_moves_a_figure(window):
+    window.load_paths([FLANGE])
+    part = window.parts[0]
+    window.scene_.clearSelection()
+    x0, y0 = part.placement.x, part.placement.y
+    steps = len(window.undo_stack)
+    start = to_view(window, *edge_point(part))
+    finger_drag(window, start, start + QPoint(120, -60))
+    scale = abs(window.view.transform().m11())
+    assert part.placement.x - x0 == pytest.approx(120 / scale, abs=2 / scale)
+    assert part.placement.y - y0 == pytest.approx(60 / scale, abs=2 / scale)
+    assert len(window.undo_stack) == steps + 1
+
+
+def test_finger_moving_less_than_the_slop_is_a_tap(window):
+    window.load_paths([FLANGE])
+    part = window.parts[0]
+    window.scene_.clearSelection()
+    x0 = part.placement.x
+    start = to_view(window, *edge_point(part))
+    finger_drag(window, start, start + QPoint(5, 0))
+    assert part.isSelected() and part.placement.x == x0
+
+
+def test_pinch_zooms_about_the_fingers_and_moving_them_pans(window):
+    window.view.fit()
+    view = window.view
+    center = QPointF(view.viewport().width() * 0.7, view.viewport().height() * 0.4)
+    under = view.mapToScene(center.toPoint())
+    scale = abs(view.transform().m11())
+    a, b = center - QPointF(50, 0), center + QPointF(50, 0)
+    touch(window, "begin", a)
+    touch(window, "update", a, b)
+    for k in range(1, 6):
+        spread = QPointF(50 + 50 * k / 5, 0)
+        touch(window, "update", center - spread, center + spread)
+    assert abs(view.transform().m11()) == pytest.approx(scale * 2, rel=1e-3)
+    after = view.mapToScene(center.toPoint())
+    assert abs(after.x() - under.x()) < 1.5 / scale and abs(after.y() - under.y()) < 1.5 / scale
+    # Both fingers move 80 px right: the drawing follows them.
+    shift = QPointF(80, 0)
+    touch(window, "update", center - QPointF(100, 0) + shift, center + QPointF(100, 0) + shift)
+    moved = view.mapToScene((center + shift).toPoint())
+    assert abs(moved.x() - under.x()) < 1.5 / scale and abs(moved.y() - under.y()) < 1.5 / scale
+    touch(window, "end", center + shift, released=True)
+    assert view.touch is None and window.user_has_view
+
+
+def test_second_finger_takes_back_a_drag_and_zooms_instead(window):
+    window.load_paths([FLANGE])
+    part = window.parts[0]
+    window.scene_.clearSelection()
+    x0, y0 = part.placement.x, part.placement.y
+    steps = len(window.undo_stack)
+    scale = abs(window.view.transform().m11())
+    start = to_view(window, *edge_point(part))
+    touch(window, "begin", start)
+    touch(window, "update", start + QPoint(30, 0))  # already dragging the figure
+    touch(window, "update", start + QPoint(30, 0), start + QPoint(130, 0))
+    touch(window, "update", start + QPoint(0, 0), start + QPoint(160, 0))
+    touch(window, "end", start, released=True)
+    part = window.parts[0]
+    assert (part.placement.x, part.placement.y) == (x0, y0)
+    assert len(window.undo_stack) == steps
+    assert window.undo_stack[-1][1][0][1:3] == (x0, y0)
+    assert abs(window.view.transform().m11()) == pytest.approx(scale * 1.6, rel=1e-3)
+
+
+def test_finger_grips_a_rectangle_edge_from_further_away(window):
+    from plasmanest.shapes import Rectangle, shape_of
+    zoom_in(window, 200, 200)
+    window.add_shape(Rectangle(150, 160, 100, 60, kerf=1.5, leadin=3).program())
+    scale = abs(window.view.transform().m11())
+    outside = (250.5 + 12 / scale, 190)  # 12 pixels outside the right edge
+    mouse(window, QEvent.MouseMove, outside, buttons=Qt.NoButton, button=Qt.NoButton)
+    assert window.view.viewport().cursor().shape() != Qt.SizeHorCursor  # out of the mouse's reach
+    start = to_view(window, *outside)
+    finger_drag(window, start, start + QPoint(round(20 * scale), 0))
+    # The edge goes to the finger, as it does to the mouse: 3 mm further than it was gripped.
+    assert shape_of(window.parts[0].placement.program).width == pytest.approx(100.5 + 3 + 20, abs=1)
+    assert window.parts[0].placement.map_point((150, 160)) == pytest.approx((150, 160))
+
+
+def test_double_tap_closes_a_drawn_sheet(window):
+    from PyQt5.QtGui import QTransform
+    window.user_has_view = True
+    window.view.setTransform(QTransform.fromScale(1, -1))
+    window.view.centerOn(250, 200)
+    window.toggle_drawing()
+    for x, y in ((0, 0), (500, 0), (500, 400), (0, 400)):
+        point = to_view(window, x, y)
+        touch(window, "begin", point)
+        touch(window, "end", point, released=True)
+    touch(window, "begin", point)
+    touch(window, "end", point, released=True)
+    assert window.view.drawing is None
+    assert list(window.sheet_item.sheet.corners) == [(0, 0), (500, 0), (500, 400), (0, 400)]
+
+
+def test_zoom_buttons(window):
+    window.view.fit()
+    scale = abs(window.view.transform().m11())
+    window.view.zoom_steps(1)
+    window.view.zoom_steps(1)
+    window.view.zoom_steps(-1)
+    assert abs(window.view.transform().m11()) == pytest.approx(scale * 1.2)
+
+
+def test_finger_on_empty_space_pans(window):
+    window.load_paths([FLANGE])
+    part = window.parts[0]
+    window.view.fit()
+    x0, y0 = part.placement.x, part.placement.y
+    view = window.view
+    start = QPointF(view.viewport().width() - 40, 40)
+    assert view.part_at(start.toPoint()) is None
+    under = view.mapToScene(start.toPoint())
+    scale = abs(view.transform().m11())
+    end = start + QPointF(-150, 90)
+    finger_drag(window, start, end)
+    moved = view.mapToScene(end.toPoint())
+    assert abs(moved.x() - under.x()) < 1.5 / scale and abs(moved.y() - under.y()) < 1.5 / scale
+    assert (part.placement.x, part.placement.y) == (x0, y0)
+    assert view.rubberBandRect().isNull() and window.user_has_view
+
+
+def test_finger_held_still_on_empty_space_selects_with_a_box(window):
+    window.load_paths([FLANGE])
+    part = window.parts[0]
+    window.scene_.clearSelection()
+    view = window.view
+    rect = view.mapFromScene(part.sceneBoundingRect()).boundingRect()
+    start = QPointF(rect.right() + 20, rect.top() - 20)
+    end = QPointF(rect.left() + 10, rect.bottom() - 10)
+    transform = view.transform()
+    touch(window, "begin", start)
+    view.touch_hold()  # what the timer does after TOUCH_HOLD_MS
+    for k in range(1, 6):
+        touch(window, "update", start + (end - start) * k / 5)
+    touch(window, "end", end, released=True)
+    assert part.isSelected()
+    assert view.transform() == transform  # did not pan
