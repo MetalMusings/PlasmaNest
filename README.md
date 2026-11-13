@@ -36,17 +36,26 @@ polygon, copies of loaded G-code and a figure left out of the cut](docs/screensh
 
 ## Status
 
-PlasmaNest is young, and written for one machine. It has been tested with LinuxCNC 2.9.4 on Debian
-13 (Python 3.13), in QtPlasmaC's simulator and on a real machine with the torch disabled. The tab
-relies on parts of QtPlasmaC that are not documented and may change in later versions.
+PlasmaNest is young, and written for one machine. It has been tested on Debian 13 (Python 3.13):
+
+| LinuxCNC | Tested |
+|---|---|
+| 2.9.4 | The tab in QtPlasmaC's simulator and on a real machine with the torch disabled. |
+| 2.10 (development version, `2.10.0~pre`) | The tab in QtPlasmaC's simulator: the tab, hiding CONVERSATIONAL and loading a nest into MAIN. Not yet on a real machine. |
+
+The same files work with both; the tab script finds out by itself which version of QtPlasmaC it is
+in. The tab relies on parts of QtPlasmaC that are not documented and may change in later versions.
+The exports are also checked against QtPlasmaC's own G-code filter in both versions, see
+[Development](#development).
 
 **Always check the preview in QtPlasmaC, and do a dry run with TORCH ENABLE off, before cutting.**
 PlasmaNest comes with no warranty; see [LICENSE](LICENSE).
 
-## Installing on QtPlasmaC 2.9
+## Installing on QtPlasmaC 2.9 or 2.10
 
 A standard LinuxCNC 2.9 installation with QtPlasmaC already has everything PlasmaNest needs
-(Python 3, PyQt5 and python3-xlib). Nothing has to be installed with apt.
+(Python 3, PyQt5 and python3-xlib). Nothing has to be installed with apt. LinuxCNC 2.10 works the
+same way; where it differs, it is said below.
 
 ### 1. Get PlasmaNest
 
@@ -75,6 +84,10 @@ mkdir -p ~/linuxcnc/configs
 cp -r /usr/share/doc/linuxcnc/examples/sample-configs/sim/qtplasmac ~/linuxcnc/configs/qtplasmac-sim
 ```
 
+(In a LinuxCNC 2.10 source tree, copy `configs/sim/qtplasmac` instead, and start it with
+`. scripts/rip-environment` first.) If a program from your own materials is loaded, also copy your
+`M190` file into the copy, or QtPlasmaC says that M190 cannot be found.
+
 Add the tab as in step 4, to `~/linuxcnc/configs/qtplasmac-sim/qtplasmac_l_metric.ini`, and start
 it with
 
@@ -94,7 +107,8 @@ and add this line under `[DISPLAY]`:
 USER_COMMAND_FILE = ~/plasmanest/qtplasmac/user_command.py
 ```
 
-Restart LinuxCNC. The tab **PLASMANEST** appears after QtPlasmaC's own tabs.
+Restart LinuxCNC. The tab **PLASMANEST** appears after QtPlasmaC's own tabs. The same line works in
+QtPlasmaC 2.9 and 2.10.
 
 - PlasmaNest starts when the tab is first chosen and ends with QtPlasmaC. It runs as a program of
   its own, so an error in PlasmaNest does not affect QtPlasmaC.
@@ -118,7 +132,8 @@ setp qtplasmac.conv_disable 1
 
 PLASMANEST then sits right after MAIN, and PlasmaNest hides its **Get from CONVERSATIONAL** button.
 Shapes from QtPlasmaC's conversational wizards are then no longer available, and neither is the
-editing of saved conversational files.
+editing of saved conversational files. This works the same in 2.9 and 2.10, although QtPlasmaC
+itself ignores the line's first value in both: the tab script makes the tabs match it at start.
 
 ### Removing it
 
@@ -372,6 +387,20 @@ python -m pytest tests
 The tests need no LinuxCNC and no screen: Qt runs offscreen. `QT_QPA_PLATFORM=xcb` runs them in real
 windows. On Windows one test is skipped in windowless mode.
 
+Where LinuxCNC is installed, the tests also run a set of exports (every kind of figure, the samples,
+turned and mirrored) through QtPlasmaC's own G-code filter, outside LinuxCNC. They look for the 2.9
+filter in `/bin/qtplasmac_gcode`, and for 2.10 in a source tree at `~/src/linuxcnc-2.10` (or
+`$PLASMANEST_LINUXCNC_210`), and are skipped where they find none, as on GitHub. Run them by hand
+after updating LinuxCNC:
+
+```bash
+python3 tools/filter_check.py              # the standard exports, every filter found
+python3 tools/filter_check.py my_nest.ngc  # your own export
+```
+
+That the filter accepts a file does not show that the cut is right: check the preview and do a dry
+run.
+
 | Path | What |
 |---|---|
 | `plasmanest/gcode.py` | Reads G-code into moves in mm, and refuses what cannot be moved safely. |
@@ -385,6 +414,7 @@ windows. On Windows one test is skipped in windowless mode.
 | `plasmanest/materials.py`, `plasmanest/theme.py` | QtPlasmaC's materials, work area and colours. |
 | `qtplasmac/` | The script QtPlasmaC runs to add the tab. |
 | `tools/embed_host.py` | Embeds PlasmaNest as QtVCP does, to try the tab without QtPlasmaC. |
+| `tools/filter_check.py` | Runs exports through QtPlasmaC's G-code filter (2.9 and 2.10) outside LinuxCNC. |
 
 Bug reports and suggestions are welcome as GitHub issues.
 
