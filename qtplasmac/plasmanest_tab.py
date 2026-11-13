@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""A PLASMANEST tab in QtPlasmaC (2.9.4) with PlasmaNest embedded as its own program.
+"""A PLASMANEST tab in QtPlasmaC (2.9.4 and 2.10) with PlasmaNest embedded as its own program.
 
 Loaded through user_command.py, which QtVCP runs from USER_COMMAND_FILE after the screen is built.
 This runs inside QtPlasmaC's process, so it is kept small and must never raise: a failure here may
@@ -10,6 +10,7 @@ of its stdout without blocking QtPlasmaC, and its window is shown in the tab the
 embed_program does it. Closing QtPlasmaC ends PlasmaNest with SIGTERM.
 """
 
+import copy
 import os
 import subprocess
 import sys
@@ -244,6 +245,122 @@ class NestLoader:
         Status().emit("error", linuxcnc.OPERATOR_ERROR, text)
 
 
+def watch_legacy_tabs(handler, tabs, tab, ensure_tab):
+    """QtPlasmaC 2.9: disable_tabs rebuilds the tab bar, so put the tab back after it."""
+    ensure_tab()
+    original = handler.disable_tabs
+
+    def disable_tabs(*args, **kwargs):
+        # HAL pins call this with their value; QtPlasmaC's disable_tabs takes no arguments.
+        # QtPlasmaC's own errors are left to QtPlasmaC, as without PlasmaNest.
+        original()
+        ensure_tab()
+    handler.disable_tabs = disable_tabs
+    # The HAL pins were connected to the original method before this file ran.
+    def titles():
+        return " ".join(tabs.tabText(i) for i in range(tabs.count()))
+
+    tab_pins = (("convTabDisable", "widgetConversational"), ("paramTabDisable", "widgetParameters"),
+                ("settingsTabDisable", "widgetSettings"))
+
+    @guarded
+    def reconcile():
+        # QtPlasmaC 2.9.4 connects these pins to disable_tabs only in startup_timeout, after their
+        # first value has been read, so a value set in the postgui HAL file is never acted on.
+        for pin_name, widget_name in tab_pins:
+            pin, widget = getattr(handler, pin_name, None), getattr(handler, widget_name, None)
+            if pin is None or widget is None:
+                continue
+            if (tabs.indexOf(widget) >= 0) == bool(pin.get()):
+                log(f"the tabs do not match {pin_name}, rebuilding them")
+                handler.disable_tabs()
+                return
+
+    @guarded
+    def pin_changed(name, value):
+        ensure_tab()
+        # After QtPlasmaC's own slot, if it is connected yet.
+        QTimer.singleShot(0, reconcile)
+        log(f"{name} = {value}, tabs: {titles()}")
+
+    for name in ("convTabDisable", "paramTabDisable", "settingsTabDisable"):
+        pin = getattr(handler, name, None)
+        if pin is not None:
+            pin.value_changed.connect(lambda value, name=name: pin_changed(name, value))
+    log(f"installed, tabs: {titles()}")
+
+
+def watch_fixed_tabs(handler, tabs, tab):
+    """QtPlasmaC 2.10: the tabs have fixed indexes (handler.CONVERSATIONAL and so on) and the HAL
+    pins only hide and show them with setTabVisible.
+
+    As with 2.9, PlasmaNest takes CONVERSATIONAL's place, index 1, when that tab is hidden
+    (conv_disable). With CONVERSATIONAL shown it goes last, because QtPlasmaC's conversational
+    code expects its own tab at index 1. Moving a tab renumbers the handler's indexes and its
+    tabNames, which is all the handler uses them for; its pin slots read the indexes when called.
+    """
+    from qtvcp.lib.qtplasmac import interlock_rules
+    name = "plasmanest_tab"
+    index_names = ("MAIN", "CONVERSATIONAL", "PARAMETERS", "SETTINGS", "STATISTICS")
+    pages = {n: tabs.widget(getattr(handler, n)) for n in index_names}
+    # The handler copies INTERLOCK_RULES (shallowly) whenever user buttons change, so add it there.
+    interlock_rules.INTERLOCK_RULES[name] = copy.deepcopy(interlock_rules.INTERLOCK_RULES["conversational_tab"])
+    handler.interlockRules[name] = interlock_rules.INTERLOCK_RULES[name]
+    rule_names = {"MAIN": "main_tab", "CONVERSATIONAL": "conversational_tab", "PARAMETERS": "parameters_tab",
+                  "SETTINGS": "settings_tab", "STATISTICS": "statistics_tab"}
+
+    def titles():
+        return " ".join(f"{tabs.tabText(i)}{'' if tabs.isTabVisible(i) else '(hidden)'}" for i in range(tabs.count()))
+
+    @guarded
+    def place(reason=""):
+        # QtPlasmaC only acts when a pin changes, so a value set in the postgui HAL file before the
+        # screen read it (as 2.9 also does) is never applied. Make the tabs match the pins.
+        for pin_name, page_name in (("convTabDisable", "CONVERSATIONAL"), ("paramTabDisable", "PARAMETERS"),
+                                    ("settingsTabDisable", "SETTINGS")):
+            hide_pin = getattr(handler, pin_name, None)
+            index = tabs.indexOf(pages[page_name])
+            if hide_pin is not None and tabs.isTabVisible(index) == bool(hide_pin.get()):
+                tabs.setTabVisible(index, not hide_pin.get())
+        conversational = pages["CONVERSATIONAL"]
+        hidden = not tabs.isTabVisible(tabs.indexOf(conversational))
+        current = tabs.indexOf(tab)
+        wanted = 1 if hidden else (tabs.count() - (1 if current >= 0 else 0))
+        if current != wanted:
+            was_current = tabs.currentWidget()
+            tabs.blockSignals(True)
+            try:
+                if current >= 0:
+                    tabs.removeTab(current)
+                tabs.insertTab(wanted, tab, TAB_TITLE)
+                if was_current is not None:
+                    tabs.setCurrentWidget(was_current)
+            finally:
+                tabs.blockSignals(False)
+        for n in index_names:
+            setattr(handler, n, tabs.indexOf(pages[n]))
+        handler.tabNames.clear()
+        for n in index_names:
+            handler.tabNames[getattr(handler, n)] = rule_names[n]
+        handler.tabNames[tabs.indexOf(tab)] = name
+        try:
+            handler.refresh_button_states(force=True)
+        except Exception:
+            log(traceback.format_exc())
+        log(f"{reason}tabs: {titles()}")
+
+    @guarded
+    def pin_changed(value):
+        QTimer.singleShot(0, lambda: place(f"conv_disable = {value}, "))
+
+    pin = getattr(handler, "convTabDisable", None)
+    place("fixed tab indexes, ")
+    if pin is not None:
+        pin.value_changed.connect(pin_changed)
+        place_later = lambda: place("at start, ")
+        QTimer.singleShot(0, place_later)
+
+
 def install(handler):
     """Add the tab to QtPlasmaC's main tab widget, last, and keep it there."""
     try:
@@ -281,47 +398,10 @@ def install(handler):
                 if widget is not None and hasattr(handler, index_name):
                     setattr(handler, index_name, tabs.indexOf(widget))
 
-        ensure_tab()
-        original = handler.disable_tabs
-
-        def disable_tabs(*args, **kwargs):
-            # HAL pins call this with their value; QtPlasmaC's disable_tabs takes no arguments.
-            # QtPlasmaC's own errors are left to QtPlasmaC, as without PlasmaNest.
-            original()
-            ensure_tab()
-        handler.disable_tabs = disable_tabs
-        # The HAL pins were connected to the original method before this file ran.
-        def titles():
-            return " ".join(tabs.tabText(i) for i in range(tabs.count()))
-
-        tab_pins = (("convTabDisable", "widgetConversational"), ("paramTabDisable", "widgetParameters"),
-                    ("settingsTabDisable", "widgetSettings"))
-
-        @guarded
-        def reconcile():
-            # QtPlasmaC 2.9.4 connects these pins to disable_tabs only in startup_timeout, after their
-            # first value has been read, so a value set in the postgui HAL file is never acted on.
-            for pin_name, widget_name in tab_pins:
-                pin, widget = getattr(handler, pin_name, None), getattr(handler, widget_name, None)
-                if pin is None or widget is None:
-                    continue
-                if (tabs.indexOf(widget) >= 0) == bool(pin.get()):
-                    log(f"the tabs do not match {pin_name}, rebuilding them")
-                    handler.disable_tabs()
-                    return
-
-        @guarded
-        def pin_changed(name, value):
-            ensure_tab()
-            # After QtPlasmaC's own slot, if it is connected yet.
-            QTimer.singleShot(0, reconcile)
-            log(f"{name} = {value}, tabs: {titles()}")
-
-        for name in ("convTabDisable", "paramTabDisable", "settingsTabDisable"):
-            pin = getattr(handler, name, None)
-            if pin is not None:
-                pin.value_changed.connect(lambda value, name=name: pin_changed(name, value))
-        log(f"installed, tabs: {titles()}")
+        if hasattr(handler, "disable_tabs"):
+            watch_legacy_tabs(handler, tabs, tab, ensure_tab)
+        else:
+            watch_fixed_tabs(handler, tabs, tab)
 
         loader = NestLoader(handler)
         previous = [tabs.currentWidget()]

@@ -254,3 +254,90 @@ def test_tab_takes_conversationals_place_and_keeps_qtplasmacs_indexes_right(app)
     QApplication.processEvents()
     assert titles(handler) == ["MAIN", "CONVERSATIONAL", "PARAMETERS", "SETTINGS", "STATISTICS", "PLASMANEST"]
     assert handler.PARAMETERS == 2 and handler.CONVERSATIONAL == 1
+
+
+class FixedHandler:
+    """What the glue uses of QtPlasmaC 2.10's handler: fixed tab indexes, no disable_tabs."""
+
+    def __init__(self):
+        class W:
+            pass
+        self.w = W()
+        self.w.main_tab_widget = QTabWidget()
+        for name in ("MAIN", "CONVERSATIONAL", "PARAMETERS", "SETTINGS", "STATISTICS"):
+            self.w.main_tab_widget.addTab(QLabel(name), name)
+        self.MAIN, self.CONVERSATIONAL, self.PARAMETERS, self.SETTINGS, self.STATISTICS = 0, 1, 2, 3, 4
+        self.tabNames = {0: "main_tab", 1: "conversational_tab", 2: "parameters_tab",
+                         3: "settings_tab", 4: "statistics_tab"}
+        self.interlockRules = {}
+        self.refreshed = 0
+        self.convTabDisable, self.paramTabDisable, self.settingsTabDisable = FakePin(), FakePin(), FakePin()
+        tabs = self.w.main_tab_widget
+        # As in QtPlasmaC 2.10: the pin slots read the indexes when they are called.
+        self.convTabDisable.value_changed.connect(lambda v: tabs.setTabVisible(self.CONVERSATIONAL, not v))
+        self.paramTabDisable.value_changed.connect(lambda v: tabs.setTabVisible(self.PARAMETERS, not v))
+
+    def refresh_button_states(self, force=False):
+        self.refreshed += 1
+
+
+@pytest.fixture
+def fixed_handler_modules(monkeypatch):
+    import sys
+    import types
+    rules = types.ModuleType("qtvcp.lib.qtplasmac.interlock_rules")
+    rules.INTERLOCK_RULES = {"conversational_tab": {"all": {"interp_idle": True}}}
+    for name in ("qtvcp", "qtvcp.lib", "qtvcp.lib.qtplasmac"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, "qtvcp.lib.qtplasmac.interlock_rules", rules)
+    sys.modules["qtvcp.lib.qtplasmac"].interlock_rules = rules
+    return rules
+
+
+def visible_titles(handler):
+    tabs = handler.w.main_tab_widget
+    return [tabs.tabText(i) for i in range(tabs.count()) if tabs.isTabVisible(i)]
+
+
+def test_install_on_fixed_tab_indexes(app, fixed_handler_modules):
+    rules = fixed_handler_modules
+    handler = FixedHandler()
+    tab = plasmanest_tab.install(handler)
+    assert tab is not None
+    # CONVERSATIONAL shown: last, and the other tabs keep their indexes.
+    assert titles(handler) == ["MAIN", "CONVERSATIONAL", "PARAMETERS", "SETTINGS", "STATISTICS", "PLASMANEST"]
+    assert handler.CONVERSATIONAL == 1 and handler.tabNames[5] == "plasmanest_tab"
+    assert handler.interlockRules["plasmanest_tab"] == {"all": {"interp_idle": True}}
+    assert rules.INTERLOCK_RULES["plasmanest_tab"] is handler.interlockRules["plasmanest_tab"]
+    assert handler.refreshed >= 1
+    tab.stop()
+
+
+def test_fixed_tabs_take_conversationals_place_when_it_is_hidden(app, fixed_handler_modules):
+    handler = FixedHandler()
+    tab = plasmanest_tab.install(handler)
+    handler.convTabDisable.set(True)
+    assert wait_for(lambda: titles(handler)[1] == "PLASMANEST")
+    assert visible_titles(handler) == ["MAIN", "PLASMANEST", "PARAMETERS", "SETTINGS", "STATISTICS"]
+    # QtPlasmaC's indexes and rule names follow the tabs.
+    tabs = handler.w.main_tab_widget
+    assert tabs.tabText(handler.CONVERSATIONAL) == "CONVERSATIONAL"
+    assert tabs.tabText(handler.PARAMETERS) == "PARAMETERS" and handler.STATISTICS == 5
+    assert handler.tabNames == {0: "main_tab", 1: "plasmanest_tab", 2: "conversational_tab",
+                                3: "parameters_tab", 4: "settings_tab", 5: "statistics_tab"}
+    # Hiding another tab afterwards uses the renumbered index.
+    handler.paramTabDisable.set(True)
+    assert visible_titles(handler) == ["MAIN", "PLASMANEST", "SETTINGS", "STATISTICS"]
+    # And it goes last again when CONVERSATIONAL is shown.
+    handler.convTabDisable.set(False)
+    assert wait_for(lambda: titles(handler)[-1] == "PLASMANEST")
+    assert handler.CONVERSATIONAL == 1
+    tab.stop()
+
+
+def test_fixed_tabs_follow_a_pin_set_before_the_screen_read_it(app, fixed_handler_modules):
+    handler = FixedHandler()
+    handler.convTabDisable.value = True  # no signal, as with a postgui setp that was missed
+    tab = plasmanest_tab.install(handler)
+    assert visible_titles(handler) == ["MAIN", "PLASMANEST", "PARAMETERS", "SETTINGS", "STATISTICS"]
+    tab.stop()
